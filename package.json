@@ -1,6 +1,7 @@
 {
-  "name": "pptx-to-html",
+  "name": "@jvmr/pptx-to-html",
   "version": "1.0.0",
+  "publishConfig": { "access": "public" },
   "description": "A TypeScript-based library for parsing PowerPoint (PPTX) with browser support",
   "type": "module",
   "main": "./dist/index.js",
