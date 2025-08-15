@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PPTX to HTML Demo</title>
+  <style>
+    .container {
+      margin-top: 20px;
+    }
+    .slide-container {
+      border: 1px solid black;
+      margin-bottom: 1rem;
+      padding: 1rem;
+      width: fit-content;
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <h1>Upload PPTX file</h1>
+  <input type="file" id="pptxInput" title="file" accept=".pptx" />
+  <div id="slides" class="container"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "name": "pptx-to-html",
+  "version": "1.0.0",
+  "description": "A TypeScript-based library for parsing PowerPoint (PPTX) with browser support",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev:demo": "npm --prefix examples/vite run dev",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/javier-mora/pptx-to-html.git"
+  },
+  "keywords": [
+    "powerpoint",
+    "pptx",
+    "presentation",
+    "slides",
+    "pptx-parser"
+  ],
+  "author": "Javier Mora",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/javier-mora/pptx-to-html/issues"
+  },
+  "homepage": "https://github.com/javier-mora/pptx-to-html#readme",
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
+  }
+}
