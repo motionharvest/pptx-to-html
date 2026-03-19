@@ -1,0 +1,107 @@
+import { Canvas, Controls, Meta } from "@storybook/addon-docs/blocks";
+import * as DemoStories from "./pptx-browser-demo.stories";
+
+<Meta of={DemoStories} name="Overview" />
+
+# Overview
+
+- [Overview](#overview)
+- [Live examples](#live-examples)
+- [Component API](#component-api)
+- [Implementation](#implementation)
+
+## Overview
+
+`@jvmr/pptx-to-html` is a browser-first library that parses `.pptx` files and returns slide HTML with inline styles.
+This Storybook focuses on a practical workflow:
+
+- render a deterministic sample presentation generated in memory
+- upload a real `.pptx` file from the browser
+- inspect the exact HTML output that the library produces
+
+## Live examples
+
+<Canvas of={DemoStories.GeneratedSample} />
+
+<Canvas of={DemoStories.UploadYourOwnDeck} />
+
+## Component API
+
+The stories render the `pptx-browser-demo` custom element so Storybook can mount the demo using the supported `@storybook/web-components-vite` framework.
+
+### Demo element properties
+
+<Controls of={DemoStories.GeneratedSample} />
+
+### Library function
+
+```ts
+import { pptxToHtml } from "@jvmr/pptx-to-html";
+
+const slides = await pptxToHtml(arrayBuffer, {
+  width: 960,
+  height: 540,
+  scaleToFit: true,
+  letterbox: false,
+});
+```
+
+`width`
+`number` - Target rendered slide width in pixels.
+
+`height`
+`number` - Target rendered slide height in pixels.
+
+`scaleToFit`
+`boolean` - Scales the slide viewport into the target container.
+
+`letterbox`
+`boolean` - Preserves aspect ratio with bars instead of stretching.
+
+`domParserFactory`
+`() => { parseFromString(...) }` - Optional parser injection for Node environments.
+
+## Implementation
+
+### Convert a presentation
+
+```ts
+import { pptxToHtml } from "@jvmr/pptx-to-html";
+
+const slides = await pptxToHtml(fileArrayBuffer, {
+  width: 960,
+  height: 540,
+  scaleToFit: true,
+  letterbox: false,
+});
+```
+
+### Render a single slide
+
+```ts
+import { pptxToHtml } from "@jvmr/pptx-to-html";
+
+const slides = await pptxToHtml(fileArrayBuffer, {
+  width: 960,
+  height: 540,
+  scaleToFit: true,
+  letterbox: false,
+});
+
+document.getElementById("slide-view")!.innerHTML = slides[0] ?? "";
+```
+
+### Render all slides
+
+```ts
+import { pptxToHtml } from "@jvmr/pptx-to-html";
+
+const slides = await pptxToHtml(fileArrayBuffer, {
+  width: 960,
+  height: 540,
+  scaleToFit: true,
+  letterbox: false,
+});
+
+document.getElementById("slides-root")!.innerHTML = slides.join("\\n");
+```

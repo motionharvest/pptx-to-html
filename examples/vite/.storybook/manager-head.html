@@ -1,0 +1,12 @@
+<script>
+  (() => {
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.has("path")) {
+      return;
+    }
+
+    params.set("path", "/docs/library-pptxtohtml--overview");
+    window.location.replace(`${window.location.pathname}?${params.toString()}${window.location.hash}`);
+  })();
+</script>

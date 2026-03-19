@@ -1,18 +1,32 @@
 {
-  "name": "vite",
+  "name": "pptx-to-html-storybook",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Storybook and demo app for the pptx-to-html library",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:lib": "npm --prefix ../.. run build",
+    "storybook": "npm run build:lib && storybook dev -p 6006 --ci",
+    "build-storybook": "npm run build:lib && storybook build --output-dir storybook-static",
+    "serve-storybook": "http-server storybook-static -p 4310 -c-1",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "overrides": {
+    "rollup": "^4.59.0"
+  },
   "devDependencies": {
-    "typescript": "^5.8.3",
-    "vite": "^7.0.6"
+    "@storybook/addon-docs": "^10.3.0",
+    "@storybook/web-components-vite": "^10.3.0",
+    "@types/node": "^25.5.0",
+    "http-server": "^14.1.1",
+    "jszip": "^3.10.1",
+    "lit": "^3.3.2",
+    "storybook": "^10.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
   }
 }

@@ -3,24 +3,54 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PPTX to HTML Demo</title>
+  <title>PPTX to HTML Browser Demo</title>
   <style>
-    .container {
-      margin-top: 20px;
+    :root {
+      color: #102040;
+      background: #eef3f9;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
     }
-    .slide-container {
-      border: 1px solid black;
-      margin-bottom: 1rem;
-      padding: 1rem;
-      width: fit-content;
-      background: white;
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(47, 111, 235, 0.12), transparent 28%),
+        linear-gradient(180deg, #f7f9fc 0%, #eef3f9 100%);
+    }
+
+    main {
+      width: min(1100px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 32px 0 48px;
+    }
+
+    .intro {
+      margin-bottom: 18px;
+    }
+
+    .intro h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.75rem, 3vw, 2.4rem);
+      line-height: 1.05;
+    }
+
+    .intro p {
+      margin: 0;
+      max-width: 780px;
+      color: #4d5d73;
+      font-size: 0.98rem;
     }
   </style>
 </head>
 <body>
-  <h1>Upload PPTX file</h1>
-  <input type="file" id="pptxInput" title="file" accept=".pptx" />
-  <div id="slides" class="container"></div>
+  <main>
+    <section class="intro">
+      <h1>PPTX to HTML browser demo</h1>
+      <p>Use the generated sample deck for a stable baseline, then upload your own presentation to inspect the rendered slide HTML in the browser.</p>
+    </section>
+    <pptx-browser-demo slide-width="960" slide-height="540" scale-to-fit autoload-sample></pptx-browser-demo>
+  </main>
 
   <script type="module" src="/src/main.ts"></script>
 </body>

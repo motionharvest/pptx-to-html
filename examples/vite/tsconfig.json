@@ -5,9 +5,10 @@
     "moduleResolution": "Bundler",
     "esModuleInterop": true,
     "strict": true,
+    "types": ["node"],
     "jsx": "preserve",
     "allowJs": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src"]
+  "include": ["src", ".storybook"]
 }
