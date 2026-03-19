@@ -1,4 +1,7 @@
 /node_modules
+/npm-debug.log*
+*.log
+storybook.log
 
 # Ignore test-related files
 /coverage.data
@@ -7,3 +10,7 @@
 # Build files
 /dist
 examples/vite/node_modules/
+examples/vite/dist/
+examples/vite/storybook-static/
+examples/vite/.vite/
+examples/vite/.vite-temp/
