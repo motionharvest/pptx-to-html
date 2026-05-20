@@ -44,6 +44,8 @@ interface ParsedParagraph {
   level: number;
   listKind: "p" | "ul" | "ol";
   listStyle?: string;
+  spaceBefore?: number;
+  spaceAfter?: number;
 }
 
 export class TextExtractor {
@@ -134,7 +136,9 @@ export class TextExtractor {
         else if (pPr?.querySelector("*|buChar")) { kind = "ul"; bulletChar = pPr.querySelector("*|buChar")?.getAttribute("char") || bulletChar; listStyle = "disc"; }
         else if (lvlDefaults[lvl]) { kind = lvlDefaults[lvl].kind; listStyle = lvlDefaults[lvl].listStyle; }
 
-        parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle });
+        const spaceBefore = parseParagraphSpacing(pPr, "spcBef");
+        const spaceAfter = parseParagraphSpacing(pPr, "spcAft");
+        parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle, spaceBefore, spaceAfter });
       }
 
       // Apply placeholder alignment, then implicit type defaults
@@ -351,13 +355,18 @@ function buildRichHtml(
     const runsHtml = renderRunsToHtml(para.runs, defaultFont, defaultSize, defaultColor);
     const hasContent = para.runs.some((r) => !r.isBreak && r.text.trim());
 
+    const spacingStyles: string[] = [];
+    if (para.spaceBefore) spacingStyles.push(`margin-top:${para.spaceBefore}pt`);
+    if (para.spaceAfter) spacingStyles.push(`margin-bottom:${para.spaceAfter}pt`);
+
     if (para.listKind === "p") {
       if (openList) {
         parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
         openList = null;
       }
-      const ml = para.level > 0 ? ` style="margin-left:${para.level * 24}px"` : "";
-      parts.push(hasContent ? `<div${ml}>${runsHtml}</div>` : `<div${ml}>&nbsp;</div>`);
+      if (para.level > 0) spacingStyles.push(`margin-left:${para.level * 24}px`);
+      const styleAttr = spacingStyles.length ? ` style="${spacingStyles.join(";")}"` : "";
+      parts.push(hasContent ? `<div${styleAttr}>${runsHtml}</div>` : `<div${styleAttr}>&nbsp;</div>`);
     } else {
       if (!openList || openList.kind !== para.listKind) {
         if (openList) parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
@@ -369,7 +378,8 @@ function buildRichHtml(
         if (para.listKind === "ul") parts.push(`<style>.pptx-bullet::marker{content:"${bullet} ";}</style>`);
         openList = { kind: para.listKind, listStyle: para.listStyle };
       }
-      parts.push(`<li class="pptx-bullet" style="margin-left:${para.level * 24}px">${runsHtml}</li>`);
+      spacingStyles.push(`margin-left:${para.level * 24}px`);
+      parts.push(`<li class="pptx-bullet" style="${spacingStyles.join(";")}">${runsHtml}</li>`);
     }
   }
   if (openList) parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
@@ -395,6 +405,28 @@ function renderRunsToHtml(
     if (styles.length === 0) return escaped;
     return `<span style="${styles.join(";")}">${escaped}</span>`;
   }).join("");
+}
+
+/**
+ * Extract spcBef or spcAft from a:pPr. Returns value in pt.
+ * Supports both spcPts (hundredths of a point) and spcPct (percentage of font size).
+ * Uses getElementsByTagNameNS for reliable namespace handling with @xmldom/xmldom.
+ */
+function parseParagraphSpacing(pPr: Element | null, tag: "spcBef" | "spcAft"): number | undefined {
+  if (!pPr) return undefined;
+  const spcEl = pPr.getElementsByTagNameNS("*", tag)[0] ?? null;
+  if (!spcEl) return undefined;
+  const spcPts = spcEl.getElementsByTagNameNS("*", "spcPts")[0] ?? null;
+  if (spcPts) {
+    const v = Number(spcPts.getAttribute("val") || 0);
+    return Number.isFinite(v) ? v / 100 : undefined;
+  }
+  const spcPct = spcEl.getElementsByTagNameNS("*", "spcPct")[0] ?? null;
+  if (spcPct) {
+    const v = Number(spcPct.getAttribute("val") || 0);
+    return Number.isFinite(v) ? v / 1000 : undefined;
+  }
+  return undefined;
 }
 
 function mapAutoNumToCss(typ: string): string { const t = typ.toLowerCase(); if (t.includes("alphauc")) return "upper-alpha"; if (t.includes("alphalc")) return "lower-alpha"; if (t.includes("romanu")) return "upper-roman"; if (t.includes("romanl")) return "lower-roman"; return "decimal"; }
