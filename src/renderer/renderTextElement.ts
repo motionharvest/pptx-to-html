@@ -17,7 +17,19 @@ export function renderTextElement(el: TextElement): string {
   const inner = el.html
     ? el.html
     : el.segments?.length
-      ? el.segments.map((seg) => `${seg.paragraphBreakBefore ? "<br>" : ""}${escape(seg.text).replace(/\n/g, "<br>")}`).join("")
+      ? el.segments.map((seg) => {
+          const prefix = seg.paragraphBreakBefore ? "<br>" : "";
+          if (seg.breakBefore) return `${prefix}<br>`;
+          const styles: string[] = [];
+          if (seg.bold) styles.push("font-weight:bold");
+          if (seg.italic) styles.push("font-style:italic");
+          if (seg.underline) styles.push("text-decoration:underline");
+          if (seg.color) styles.push(`color:${seg.color}`);
+          if (seg.fontSize) styles.push(`font-size:${seg.fontSize}pt`);
+          if (seg.fontFamily) styles.push(`font-family:${seg.fontFamily}`);
+          const text = escape(seg.text).replace(/\n/g, "<br>");
+          return styles.length > 0 ? `${prefix}<span style="${styles.join(";")}">${text}</span>` : `${prefix}${text}`;
+        }).join("")
       : escape(el.content).replace(/\n/g, "<br>");
   const lineHeight = el.lineHeight ? `line-height: ${el.lineHeight};` : "line-height: 1.0;";
   return `<div style="

@@ -23,7 +23,7 @@ export interface TextElement {
   align?: { horizontal?: "left" | "center" | "right" | "justify"; vertical?: "top" | "middle" | "bottom" };
   padding?: { left: number; top: number; right: number; bottom: number };
   html?: string;
-  segments?: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean; breakBefore?: boolean; paragraphBreakBefore?: boolean }>;
+  segments?: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; fontSize?: number; fontFamily?: string; breakBefore?: boolean; paragraphBreakBefore?: boolean }>;
 
   /** Optional line height multiplier */
   lineHeight?: number;
