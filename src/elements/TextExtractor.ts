@@ -137,10 +137,11 @@ export class TextExtractor {
         parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle });
       }
 
-      // Apply placeholder alignment if slide paragraphs didn't specify one
-      if (!horizontalAlign && phDefaults?.align) {
-        const a = phDefaults.align;
-        horizontalAlign = a === "ctr" ? "center" : a === "r" ? "right" : a.startsWith("just") ? "justify" : "left";
+      // Apply placeholder alignment, then implicit type defaults
+      if (!horizontalAlign) {
+        const a = phDefaults?.align
+          || (ph ? IMPLICIT_PLACEHOLDER_ALIGN[ph.getAttribute("type") || ""] : undefined);
+        if (a) horizontalAlign = a === "ctr" ? "center" : a === "r" ? "right" : a.startsWith("just") ? "justify" : "left";
       }
 
       // Resolve default color: slide lstStyle → defRPr → shape fill → placeholder → black
@@ -238,6 +239,12 @@ export class TextExtractor {
     return elements;
   }
 }
+
+const IMPLICIT_PLACEHOLDER_ALIGN: Record<string, string> = {
+  title: "ctr",
+  ctrTitle: "ctr",
+  subTitle: "ctr",
+};
 
 /**
  * Match a slide placeholder to its layout/master definition.
