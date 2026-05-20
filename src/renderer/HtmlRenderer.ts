@@ -2,6 +2,7 @@ import { SlideElement } from "../models/SlideElement";
 import { renderTextElement } from "./renderTextElement";
 import { renderImageElement } from "./renderImageElement";
 import { renderShapeElement } from "./renderShapeElement";
+import { renderLineElement } from "./renderLineElement";
 import { renderTableElement } from "./renderTableElement";
 import { renderChartElement } from "./renderChartElement";
 
@@ -40,6 +41,7 @@ export class HtmlRenderer {
         case "text": return renderTextElement(el);
         case "image": return renderImageElement(el);
         case "shape": return renderShapeElement(el, { scaleStrokes: scaleToFit });
+        case "line": return renderLineElement(el as any, { scaleStrokes: scaleToFit });
         case "table": return renderTableElement(el);
         case "chart": return renderChartElement(el as any);
         default:

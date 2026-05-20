@@ -16,10 +16,10 @@ export class PptxReader {
    * @param buffer The binary content of a .pptx file.
    * @returns A list of slides, each represented as an array of SlideElement.
    */
-  async load(buffer: ArrayBuffer): Promise<SlideElement[][]> {
+  async load(buffer: ArrayBuffer, options: { imageSource?: "data-uri" | "zip-path" } = {}): Promise<SlideElement[][]> {
     this.zip = await JSZip.loadAsync(buffer);
     await this.computeSlideBaseSize();
-    const extractor = new SlideExtractor(this.zip);
+    const extractor = new SlideExtractor(this.zip, { imageSource: options.imageSource });
     return extractor.extractSlides();
   }
 

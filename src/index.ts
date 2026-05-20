@@ -1,6 +1,16 @@
 import { PptxReader } from "./core/PptxReader";
 import { HtmlRenderer } from "./renderer/HtmlRenderer";
 
+export type ImageSourceMode = "data-uri" | "zip-path";
+export interface PptxToHtmlConfig {
+  width?: number;
+  height?: number;
+  scaleToFit?: boolean;
+  letterbox?: boolean;
+  imageSource?: ImageSourceMode;
+  domParserFactory?: () => { parseFromString(xml: string, mime: string): Document };
+}
+
 /**
  * Converts a PPTX file buffer into an array of HTML slides.
  * @param buffer ArrayBuffer representing the .pptx file.
@@ -13,7 +23,7 @@ import { HtmlRenderer } from "./renderer/HtmlRenderer";
  */
 export async function pptxToHtml(
   buffer: ArrayBuffer,
-  config?: { width?: number; height?: number; scaleToFit?: boolean; letterbox?: boolean; domParserFactory?: () => { parseFromString(xml: string, mime: string): Document } }
+  config?: PptxToHtmlConfig
 ): Promise<string[]> {
   // Optional DOM parser injection for Node environments without global DOMParser
   if (config?.domParserFactory) {
@@ -21,7 +31,7 @@ export async function pptxToHtml(
     XmlHelper.setDomParser(config.domParserFactory as any);
   }
   const reader = new PptxReader();
-  const slides = await reader.load(buffer);
+  const slides = await reader.load(buffer, { imageSource: config?.imageSource });
   const base = await reader.getBaseSizePx();
   const opts = { ...(config || {}), baseWidth: base.width, baseHeight: base.height } as any;
   return slides.map((slideElements) => HtmlRenderer.render(slideElements, opts));

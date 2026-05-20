@@ -1,4 +1,4 @@
-import { ShapeElement } from "../models/SlideElement";
+import { ShapeElement, LineElement } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
 
 /**
@@ -90,6 +90,28 @@ export class ShapeExtractor {
         if (val && themeColors[val]) {
           fillColor = themeColors[val];
         }
+      }
+
+      const ln = spPr?.getElementsByTagNameNS("*", "ln")[0] ?? null;
+      const prstDash = ln?.getElementsByTagNameNS("*", "prstDash")[0] ?? null;
+      const dashVal = prstDash?.getAttribute("val") || "";
+      const dashStyle = dashVal ? (dashVal.includes("dot") ? "dotted" : dashVal.includes("dash") ? "dashed" : "solid") : undefined;
+      const isLineShape = shapeType === "line" || shapeType === "straightConnector1" || shape.localName === "cxnSp";
+
+      if (isLineShape) {
+        const lineElement: LineElement = {
+          type: "line",
+          position: { x, y },
+          size: { width: cx, height: cy },
+          color: borderColor,
+          strokeWidth,
+          dashStyle,
+          rotationDeg,
+          headEnd,
+          tailEnd,
+        };
+        elements.push(lineElement);
+        continue;
       }
 
       const element: ShapeElement = {

@@ -17,7 +17,8 @@ export class ImageExtractor {
     spTree: Element | null,
     rels: Document,
     zip: JSZip,
-    basePath: string = "ppt/slides"
+    basePath: string = "ppt/slides",
+    options: { imageSource?: "data-uri" | "zip-path" } = {}
   ): Promise<ImageElement[]> {
     if (!spTree) return [];
 
@@ -41,9 +42,9 @@ export class ImageExtractor {
       const imageFile = zip.file(normalizedPath);
       if (!imageFile) continue;
 
-      const binary = await imageFile.async("base64");
-      const extImg = normalizedPath.split(".").pop()?.toLowerCase() || "png";
-      const dataUri = `data:image/${extImg};base64,${binary}`;
+      const src = options.imageSource === "zip-path"
+        ? normalizedPath
+        : await this.toDataUri(imageFile, normalizedPath);
 
       const xfrm = pic.getElementsByTagNameNS("*", "xfrm")[0];
 
@@ -59,7 +60,7 @@ export class ImageExtractor {
       const element: ImageElement = {
         type: "image",
         relId: embedId,
-        src: dataUri,
+        src,
         position: { x, y },
         size: { width: cx, height: cy }
       };
@@ -84,5 +85,11 @@ export class ImageExtractor {
       else if (part !== ".") resolved.push(part);
     }
     return resolved.join("/");
+  }
+
+  private static async toDataUri(imageFile: JSZip.JSZipObject, normalizedPath: string): Promise<string> {
+    const binary = await imageFile.async("base64");
+    const extImg = normalizedPath.split(".").pop()?.toLowerCase() || "png";
+    return `data:image/${extImg};base64,${binary}`;
   }
 }

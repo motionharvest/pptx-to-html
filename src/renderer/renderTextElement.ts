@@ -14,7 +14,12 @@ export function renderTextElement(el: TextElement): string {
   const pad = el.padding || { left: 0, top: 0, right: 0, bottom: 0 };
   const textAlign = el.align?.horizontal || "left";
   const justify = el.align?.vertical === "middle" ? "center" : el.align?.vertical === "bottom" ? "flex-end" : "flex-start";
-  const inner = el.html ? el.html : escape(el.content);
+  const inner = el.html
+    ? el.html
+    : el.segments?.length
+      ? el.segments.map((seg) => `${seg.paragraphBreakBefore ? "<br>" : ""}${escape(seg.text).replace(/\n/g, "<br>")}`).join("")
+      : escape(el.content).replace(/\n/g, "<br>");
+  const lineHeight = el.lineHeight ? `line-height: ${el.lineHeight};` : "line-height: 1.0;";
   return `<div style="
     position: absolute;
     left: ${x}px;
@@ -25,10 +30,12 @@ export function renderTextElement(el: TextElement): string {
     flex-direction: column;
     justify-content: ${justify};
     text-align: ${textAlign};
+    line-height: 1.0;
     padding: ${pad.top}px ${pad.right}px ${pad.bottom}px ${pad.left}px;
     font-family: ${el.font?.name || "Arial"};
     font-size: ${nf(Number(el.font?.size), 12)}pt;
     color: ${el.font?.color || "#000"};
+    ${lineHeight}
     overflow: hidden;
     white-space: pre-wrap;
   ">${inner}</div>`;

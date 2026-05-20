@@ -11,7 +11,10 @@ import { SlideElement } from "../models/SlideElement";
  * Responsible for extracting all slides from the .pptx file as lists of SlideElement.
  */
 export class SlideExtractor {
-  constructor(private zip: JSZip) {}
+  constructor(
+    private zip: JSZip,
+    private options: { imageSource?: "data-uri" | "zip-path" } = {}
+  ) {}
 
   /**
    * Extracts all slides in order and parses their visual elements.
@@ -100,18 +103,22 @@ export class SlideExtractor {
 
       // Extract elements from master → layout → slide (respecting z-order: back to front)
       const masterText = masterSpTree ? TextExtractor.extract(masterSpTree, themeColors, { context: "master" }) : [];
-      const masterImages = masterSpTree && masterRelsXml ? await ImageExtractor.extract(masterSpTree, masterRelsXml, this.zip, "ppt/slideMasters") : [];
+      const masterImages = masterSpTree && masterRelsXml
+        ? await ImageExtractor.extract(masterSpTree, masterRelsXml, this.zip, "ppt/slideMasters", this.options)
+        : [];
       const masterShapes = masterSpTree ? ShapeExtractor.extract(masterSpTree, themeColors) : [];
 
       const layoutText = layoutSpTree ? TextExtractor.extract(layoutSpTree, themeColors, { context: "layout" }) : [];
-      const layoutImages = layoutSpTree && layoutRelsXml ? await ImageExtractor.extract(layoutSpTree, layoutRelsXml, this.zip, "ppt/slideLayouts") : [];
+      const layoutImages = layoutSpTree && layoutRelsXml
+        ? await ImageExtractor.extract(layoutSpTree, layoutRelsXml, this.zip, "ppt/slideLayouts", this.options)
+        : [];
       const layoutShapes = layoutSpTree ? ShapeExtractor.extract(layoutSpTree, themeColors) : [];
 
       const masterGeom = this.extractPlaceholderGeom(masterSpTree);
       const layoutGeom = this.extractPlaceholderGeom(layoutSpTree);
       const mergedGeom: Record<string, { x: number; y: number; cx: number; cy: number }> = { ...masterGeom, ...layoutGeom };
       const slideText = TextExtractor.extract(spTree, themeColors, { context: "slide", placeholderGeom: mergedGeom });
-      const slideImages = await ImageExtractor.extract(spTree, relsXml, this.zip, "ppt/slides");
+      const slideImages = await ImageExtractor.extract(spTree, relsXml, this.zip, "ppt/slides", this.options);
       const slideTables = TableExtractor.extract(spTree, themeColors, themeTableStyles);
       const slideCharts = await ChartExtractor.extract(spTree, relsXml, this.zip, themeColors);
       const slideShapes = ShapeExtractor.extract(spTree, themeColors);
@@ -210,6 +217,9 @@ export class SlideExtractor {
         const fullPath = this.resolvePath(target, baseDir);
         const file = zip.file(fullPath);
         if (file) {
+          if (this.options.imageSource === "zip-path") {
+            return { type: "background", imageSrc: fullPath } as SlideElement;
+          }
           const binary = await file.async("base64");
           const ext = fullPath.split(".").pop()?.toLowerCase() || "png";
           const dataUri = `data:image/${ext};base64,${binary}`;
