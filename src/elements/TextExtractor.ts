@@ -46,6 +46,9 @@ interface ParsedParagraph {
   listStyle?: string;
   spaceBefore?: number;
   spaceAfter?: number;
+  bulletColor?: string;
+  marginLeft?: number;
+  indent?: number;
 }
 
 export class TextExtractor {
@@ -138,7 +141,23 @@ export class TextExtractor {
 
         const spaceBefore = parseParagraphSpacing(pPr, "spcBef");
         const spaceAfter = parseParagraphSpacing(pPr, "spcAft");
-        parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle, spaceBefore, spaceAfter });
+
+        const marLAttr = pPr?.getAttribute("marL");
+        const marginLeft = marLAttr ? Number(marLAttr) / 9525 : undefined;
+        const indentAttr = pPr?.getAttribute("indent");
+        const indent = indentAttr ? Number(indentAttr) / 9525 : undefined;
+
+        let bulletColor: string | undefined;
+        const buClrEl = pPr?.getElementsByTagNameNS("*", "buClr")[0] ?? null;
+        if (buClrEl) {
+          bulletColor = XmlHelper.getColorFromElement(buClrEl, themeColors) ?? undefined;
+        }
+        if (!bulletColor && kind !== "p") {
+          const firstContentRun = runs.find((r) => !r.isBreak && r.text.trim());
+          bulletColor = firstContentRun?.color;
+        }
+
+        parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle, spaceBefore, spaceAfter, bulletColor, marginLeft, indent });
       }
 
       // Apply placeholder alignment, then implicit type defaults
@@ -351,26 +370,28 @@ function buildRichHtml(
   let openList: { kind: "ul" | "ol"; listStyle?: string } | null = null;
   const bullet = bulletChar ? escapeHtml(bulletChar) : "\u2022";
 
-  for (const para of paragraphs) {
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const para = paragraphs[pi];
     const runsHtml = renderRunsToHtml(para.runs, defaultFont, defaultSize, defaultColor);
     const hasContent = para.runs.some((r) => !r.isBreak && r.text.trim());
 
     const spacingStyles: string[] = [];
-    if (para.spaceBefore) spacingStyles.push(`margin-top:${para.spaceBefore}pt`);
-    if (para.spaceAfter) spacingStyles.push(`margin-bottom:${para.spaceAfter}pt`);
+    if (para.spaceBefore && pi > 0) spacingStyles.push(`margin-top:${para.spaceBefore}pt`);
+    if (para.spaceAfter && pi < paragraphs.length - 1) spacingStyles.push(`margin-bottom:${para.spaceAfter}pt`);
 
     if (para.listKind === "p") {
       if (openList) {
         parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
         openList = null;
       }
-      if (para.level > 0) spacingStyles.push(`margin-left:${para.level * 24}px`);
+      const ml = para.marginLeft ?? (para.level > 0 ? para.level * 24 : 0);
+      if (ml > 0) spacingStyles.push(`margin-left:${ml}px`);
       const styleAttr = spacingStyles.length ? ` style="${spacingStyles.join(";")}"` : "";
       parts.push(hasContent ? `<div${styleAttr}>${runsHtml}</div>` : `<div${styleAttr}>&nbsp;</div>`);
     } else {
       if (!openList || openList.kind !== para.listKind) {
         if (openList) parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
-        const commonListCss = `list-style-position: inside; padding-left: 0; margin: 0;`;
+        const commonListCss = `list-style-position: outside; padding-left: 0; margin: 0;`;
         const style = para.listKind === "ol"
           ? ` style="${commonListCss} list-style-type: ${para.listStyle || "decimal"};"`
           : ` style="${commonListCss}"`;
@@ -378,7 +399,9 @@ function buildRichHtml(
         if (para.listKind === "ul") parts.push(`<style>.pptx-bullet::marker{content:"${bullet} ";}</style>`);
         openList = { kind: para.listKind, listStyle: para.listStyle };
       }
-      spacingStyles.push(`margin-left:${para.level * 24}px`);
+      const ml = para.marginLeft ?? para.level * 24;
+      spacingStyles.push(`margin-left:${ml}px`);
+      if (para.bulletColor) spacingStyles.push(`color:${para.bulletColor}`);
       parts.push(`<li class="pptx-bullet" style="${spacingStyles.join(";")}">${runsHtml}</li>`);
     }
   }
