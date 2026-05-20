@@ -58,6 +58,8 @@ export interface LineElement {
   strokeWidth?: number;
   dashStyle?: "solid" | "dashed" | "dotted";
   rotationDeg?: number;
+  flipH?: boolean;
+  flipV?: boolean;
   headEnd?: { type?: string; w?: string; len?: string };
   tailEnd?: { type?: string; w?: string; len?: string };
 }

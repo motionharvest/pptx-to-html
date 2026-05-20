@@ -32,6 +32,8 @@ export class ShapeExtractor {
       const cy = ext ? XmlHelper.getAttrAsNumber(ext, "cy") : 500000;
       const rotAttr = xfrm?.getAttribute("rot");
       const rotationDeg = rotAttr ? Number(rotAttr) / 60000 : undefined;
+      const flipH = xfrm?.getAttribute("flipH") === "1";
+      const flipV = xfrm?.getAttribute("flipV") === "1";
 
       const prstGeom = shape.getElementsByTagNameNS("*", "prstGeom")[0];
       const shapeType = prstGeom?.getAttribute("prst") ?? "rect";
@@ -107,6 +109,8 @@ export class ShapeExtractor {
           strokeWidth,
           dashStyle,
           rotationDeg,
+          flipH: flipH || undefined,
+          flipV: flipV || undefined,
           headEnd,
           tailEnd,
         };

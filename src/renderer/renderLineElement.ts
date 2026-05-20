@@ -4,8 +4,10 @@ export function renderLineElement(el: LineElement, options: { scaleStrokes?: boo
   const nf = (n: number, fb = 0) => (Number.isFinite(n) ? n : fb);
   const x = nf(el.position?.x, 0) / 9525;
   const y = nf(el.position?.y, 0) / 9525;
-  const width = Math.max(nf(el.size?.width, 0) / 9525, 1);
-  const height = Math.max(nf(el.size?.height, 0) / 9525, 1);
+  const rawW = nf(el.size?.width, 0) / 9525;
+  const rawH = nf(el.size?.height, 0) / 9525;
+  const width = Math.max(rawW, 1);
+  const height = Math.max(rawH, 1);
   const sw = el.strokeWidth && el.strokeWidth > 0 ? el.strokeWidth : 1;
   const dash = el.dashStyle === "dashed" ? "stroke-dasharray: 8 6;" : el.dashStyle === "dotted" ? "stroke-dasharray: 2 6;" : "";
 
@@ -13,9 +15,17 @@ export function renderLineElement(el: LineElement, options: { scaleStrokes?: boo
   const markerStartAttr = defs.startId ? `marker-start="url(#${defs.startId})"` : "";
   const markerEndAttr = defs.endId ? `marker-end="url(#${defs.endId})"` : "";
 
+  let x1 = 0, y1 = 0, x2 = rawW, y2 = rawH;
+  if (el.flipH) { x1 = rawW; x2 = 0; }
+  if (el.flipV) { y1 = rawH; y2 = 0; }
+
+  // When a dimension is effectively zero (clamped to 1px), center the line within it
+  if (rawW < 1) { x1 = width / 2; x2 = width / 2; }
+  if (rawH < 1) { y1 = height / 2; y2 = height / 2; }
+
   return `<svg viewBox="0 0 ${width} ${height}" style="position:absolute; left:${x}px; top:${y}px; width:${width}px; height:${height}px; overflow:visible;" overflow="visible">
     ${defs.defs}
-    <line x1="0" y1="${height / 2}" x2="${width}" y2="${height / 2}" stroke="${el.color || "#000"}" stroke-width="${sw}" ${options.scaleStrokes ? "" : "vector-effect=\"non-scaling-stroke\""} style="${dash}" ${markerStartAttr} ${markerEndAttr} />
+    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${el.color || "#000"}" stroke-width="${sw}" ${options.scaleStrokes ? "" : "vector-effect=\"non-scaling-stroke\""} style="${dash}" ${markerStartAttr} ${markerEndAttr} />
   </svg>`;
 }
 
