@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { XmlHelper } from "./XmlHelper";
-import { TextExtractor } from "../elements/TextExtractor";
+import { TextExtractor, PlaceholderDefaults } from "../elements/TextExtractor";
 import { ImageExtractor } from "../elements/ImageExtractor";
 import { ShapeExtractor } from "../elements/ShapeExtractor";
 import { TableExtractor } from "../elements/TableExtractor";
@@ -114,10 +114,22 @@ export class SlideExtractor {
         : [];
       const layoutShapes = layoutSpTree ? ShapeExtractor.extract(layoutSpTree, themeColors) : [];
 
-      const masterGeom = this.extractPlaceholderGeom(masterSpTree);
-      const layoutGeom = this.extractPlaceholderGeom(layoutSpTree);
-      const mergedGeom: Record<string, { x: number; y: number; cx: number; cy: number }> = { ...masterGeom, ...layoutGeom };
-      const slideText = TextExtractor.extract(spTree, themeColors, { context: "slide", placeholderGeom: mergedGeom });
+      const masterDefaults = this.extractPlaceholderDefaults(masterSpTree, themeColors);
+      const layoutDefaults = this.extractPlaceholderDefaults(layoutSpTree, themeColors);
+      const mergedDefaults = new Map<string, PlaceholderDefaults>(masterDefaults);
+      for (const [key, layoutVal] of layoutDefaults) {
+        const existing = mergedDefaults.get(key);
+        if (existing) {
+          const merged = { ...existing };
+          for (const [k, v] of Object.entries(layoutVal)) {
+            if (v !== undefined) (merged as any)[k] = v;
+          }
+          mergedDefaults.set(key, merged);
+        } else {
+          mergedDefaults.set(key, layoutVal);
+        }
+      }
+      const slideText = TextExtractor.extract(spTree, themeColors, { context: "slide", placeholderDefaults: mergedDefaults });
       const slideImages = await ImageExtractor.extract(spTree, relsXml, this.zip, "ppt/slides", this.options);
       const slideTables = TableExtractor.extract(spTree, themeColors, themeTableStyles);
       const slideCharts = await ChartExtractor.extract(spTree, relsXml, this.zip, themeColors);
@@ -156,25 +168,64 @@ export class SlideExtractor {
     return resolved.join("/");
   }
 
-  private extractPlaceholderGeom(spTree: Element | null): Record<string, { x: number; y: number; cx: number; cy: number }> {
-    const map: Record<string, { x: number; y: number; cx: number; cy: number }> = {};
+  private extractPlaceholderDefaults(spTree: Element | null, themeColors: Record<string, string>): Map<string, PlaceholderDefaults> {
+    const map = new Map<string, PlaceholderDefaults>();
     if (!spTree) return map;
     const shapes = spTree.getElementsByTagNameNS("*", "sp");
     for (const shape of Array.from(shapes)) {
       const nvPr = shape.getElementsByTagNameNS("*", "nvPr")[0] ?? null;
       const ph = nvPr?.getElementsByTagNameNS("*", "ph")[0] ?? null;
-      const idx = ph?.getAttribute("idx") || undefined;
-      if (!idx) continue;
+      if (!ph) continue;
+      const type = ph.getAttribute("type") || undefined;
+      const idx = ph.getAttribute("idx") || undefined;
+      if (!type && !idx) continue;
+
+      const defaults: PlaceholderDefaults = {};
+
       const xfrm = shape.getElementsByTagNameNS("*", "xfrm")[0] ?? null;
       const off = xfrm?.getElementsByTagNameNS("*", "off")[0] ?? null;
       const ext = xfrm?.getElementsByTagNameNS("*", "ext")[0] ?? null;
-      if (!off || !ext) continue;
-      map[idx] = {
-        x: XmlHelper.getAttrAsNumber(off, "x"),
-        y: XmlHelper.getAttrAsNumber(off, "y"),
-        cx: XmlHelper.getAttrAsNumber(ext, "cx"),
-        cy: XmlHelper.getAttrAsNumber(ext, "cy"),
-      };
+      if (off && ext) {
+        defaults.x = XmlHelper.getAttrAsNumber(off, "x");
+        defaults.y = XmlHelper.getAttrAsNumber(off, "y");
+        defaults.cx = XmlHelper.getAttrAsNumber(ext, "cx");
+        defaults.cy = XmlHelper.getAttrAsNumber(ext, "cy");
+      }
+
+      const txBody = shape.getElementsByTagNameNS("*", "txBody")[0] ?? null;
+      const bodyPr = txBody?.getElementsByTagNameNS("*", "bodyPr")[0] ?? null;
+      if (bodyPr) {
+        const anchor = bodyPr.getAttribute("anchor");
+        if (anchor) defaults.anchor = anchor;
+        const lI = bodyPr.getAttribute("lIns"); if (lI) defaults.lIns = lI;
+        const tI = bodyPr.getAttribute("tIns"); if (tI) defaults.tIns = tI;
+        const rI = bodyPr.getAttribute("rIns"); if (rI) defaults.rIns = rI;
+        const bI = bodyPr.getAttribute("bIns"); if (bI) defaults.bIns = bI;
+      }
+
+      const lstStyle = txBody?.querySelector("*|lstStyle");
+      const lvl1pPr = lstStyle?.querySelector("*|lvl1pPr");
+      if (lvl1pPr) {
+        const algn = lvl1pPr.getAttribute("algn");
+        if (algn) defaults.align = algn;
+
+        const defRPr = lvl1pPr.querySelector("*|defRPr");
+        if (defRPr) {
+          const sz = defRPr.getAttribute("sz");
+          if (sz) { const n = parseInt(sz, 10); if (Number.isFinite(n)) defaults.fontSize = n / 100; }
+          if (defRPr.getAttribute("b") === "1") defaults.bold = true;
+          if (defRPr.getAttribute("i") === "1") defaults.italic = true;
+          const solidFill = defRPr.querySelector("*|solidFill");
+          const color = XmlHelper.getColorFromElement(solidFill || null, themeColors);
+          if (color) defaults.color = color;
+          const latin = defRPr.getElementsByTagNameNS("*", "latin")[0];
+          const fontFamily = latin?.getAttribute("typeface");
+          if (fontFamily) defaults.fontFamily = fontFamily;
+        }
+      }
+
+      if (type) map.set(`type:${type}`, defaults);
+      if (idx) map.set(`idx:${idx}`, defaults);
     }
     return map;
   }

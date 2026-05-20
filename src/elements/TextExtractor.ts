@@ -1,6 +1,32 @@
 import { TextElement } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
 
+export interface PlaceholderDefaults {
+  x?: number;
+  y?: number;
+  cx?: number;
+  cy?: number;
+  anchor?: string;
+  lIns?: string;
+  tIns?: string;
+  rIns?: string;
+  bIns?: string;
+  fontSize?: number;
+  fontFamily?: string;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  align?: string;
+}
+
+interface TextRunDefaults {
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  fontSize?: number;
+  fontFamily?: string;
+}
+
 interface ParsedRun {
   text: string;
   bold?: boolean;
@@ -21,7 +47,7 @@ interface ParsedParagraph {
 }
 
 export class TextExtractor {
-  static extract(spTree: Element | null, themeColors: Record<string, string>, opts: { context?: "slide" | "layout" | "master"; placeholderGeom?: Record<string, { x: number; y: number; cx: number; cy: number }>; preserveTextStructure?: boolean } = {}): TextElement[] {
+  static extract(spTree: Element | null, themeColors: Record<string, string>, opts: { context?: "slide" | "layout" | "master"; placeholderDefaults?: Map<string, PlaceholderDefaults>; preserveTextStructure?: boolean } = {}): TextElement[] {
     if (!spTree) return [];
     const elements: TextElement[] = [];
     const shapes = spTree.getElementsByTagNameNS("*", "sp");
@@ -31,14 +57,18 @@ export class TextExtractor {
       if (opts.context && opts.context !== "slide" && ph) continue;
       const txBody = shape.getElementsByTagNameNS("*", "txBody")[0];
       if (!txBody) continue;
+
+      // Resolve placeholder defaults for this shape
+      const phDefaults = resolvePlaceholder(ph, opts.placeholderDefaults);
+
       const paragraphs = txBody.getElementsByTagNameNS("*", "p");
       const bodyPr = txBody.getElementsByTagNameNS("*", "bodyPr")[0] ?? null;
-      const anchor = bodyPr?.getAttribute("anchor") || undefined;
+      const anchor = bodyPr?.getAttribute("anchor") || phDefaults?.anchor || undefined;
       const verticalAlign = anchor === "ctr" ? "middle" : anchor === "b" ? "bottom" : "top";
-      const lIns = bodyPr?.getAttribute("lIns");
-      const tIns = bodyPr?.getAttribute("tIns");
-      const rIns = bodyPr?.getAttribute("rIns");
-      const bIns = bodyPr?.getAttribute("bIns");
+      const lIns = bodyPr?.getAttribute("lIns") ?? phDefaults?.lIns;
+      const tIns = bodyPr?.getAttribute("tIns") ?? phDefaults?.tIns;
+      const rIns = bodyPr?.getAttribute("rIns") ?? phDefaults?.rIns;
+      const bIns = bodyPr?.getAttribute("bIns") ?? phDefaults?.bIns;
       const padding = {
         left: lIns ? Number(lIns) / 9525 : 0,
         top: tIns ? Number(tIns) / 9525 : 0,
@@ -63,18 +93,27 @@ export class TextExtractor {
         }
       }
 
+      // Text run defaults cascade: placeholder → shape-level fallbacks
+      const textDefaults: TextRunDefaults = {
+        bold: phDefaults?.bold,
+        italic: phDefaults?.italic,
+        color: phDefaults?.color,
+        fontSize: phDefaults?.fontSize,
+        fontFamily: phDefaults?.fontFamily,
+      };
+
       const parsedParagraphs: ParsedParagraph[] = [];
       let horizontalAlign: "left" | "center" | "right" | "justify" | undefined;
-      let defaultFontName = "Arial";
-      let defaultFontSize = 18;
-      let fontDefaultsCaptured = false;
+      let defaultFontName = phDefaults?.fontFamily || "Arial";
+      let defaultFontSize = phDefaults?.fontSize || 18;
+      let fontDefaultsCaptured = !!phDefaults?.fontFamily || !!phDefaults?.fontSize;
 
       for (const p of Array.from(paragraphs)) {
         const pPr = p.getElementsByTagNameNS("*", "pPr")[0] ?? null;
         const algn = pPr?.getAttribute("algn") || undefined;
         if (algn && !horizontalAlign) horizontalAlign = algn === "ctr" ? "center" : algn === "r" ? "right" : algn.startsWith("just") ? "justify" : "left";
 
-        const runs = extractRunsFromParagraph(p, themeColors);
+        const runs = extractRunsFromParagraph(p, themeColors, textDefaults);
 
         if (!fontDefaultsCaptured) {
           for (const run of runs) {
@@ -98,7 +137,13 @@ export class TextExtractor {
         parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle });
       }
 
-      // Resolve default color from the fallback chain (NOT from individual runs)
+      // Apply placeholder alignment if slide paragraphs didn't specify one
+      if (!horizontalAlign && phDefaults?.align) {
+        const a = phDefaults.align;
+        horizontalAlign = a === "ctr" ? "center" : a === "r" ? "right" : a.startsWith("just") ? "justify" : "left";
+      }
+
+      // Resolve default color: slide lstStyle → defRPr → shape fill → placeholder → black
       let defaultColor: string | undefined;
       const lstDefRPr = txBody.querySelector("*|lstStyle *|defRPr");
       const lstFill = lstDefRPr?.querySelector("*|solidFill");
@@ -113,8 +158,11 @@ export class TextExtractor {
         const shapeFill = spPr?.querySelector("*|solidFill");
         defaultColor = XmlHelper.getColorFromElement(shapeFill || null, themeColors);
       }
+      if (!defaultColor && phDefaults?.color) {
+        defaultColor = phDefaults.color;
+      }
 
-      // Build plain text content (backward-compatible with old getParagraphText behavior)
+      // Build plain text content
       const textParts: string[] = [];
       for (const para of parsedParagraphs) {
         let t = "";
@@ -154,6 +202,7 @@ export class TextExtractor {
 
       const richHtml = buildRichHtml(parsedParagraphs, bulletChar, defaultFontName, defaultFontSize, defaultColor);
 
+      // Geometry: slide xfrm → placeholder defaults → fallback
       const xfrm = shape.getElementsByTagNameNS("*", "xfrm")[0];
       const off = xfrm?.getElementsByTagNameNS("*", "off")[0] ?? null;
       const ext = xfrm?.getElementsByTagNameNS("*", "ext")[0] ?? null;
@@ -164,13 +213,11 @@ export class TextExtractor {
         y = XmlHelper.getAttrAsNumber(off, "y");
         cx = XmlHelper.getAttrAsNumber(ext, "cx");
         cy = XmlHelper.getAttrAsNumber(ext, "cy");
-      } else if (opts.placeholderGeom) {
-        const phIdx = ph?.getAttribute("idx") || undefined;
-        const g = phIdx ? opts.placeholderGeom[phIdx] : undefined;
-        x = g?.x ?? 0;
-        y = g?.y ?? 0;
-        cx = g?.cx ?? 1000000;
-        cy = g?.cy ?? 500000;
+      } else if (phDefaults?.cx != null) {
+        x = phDefaults.x ?? 0;
+        y = phDefaults.y ?? 0;
+        cx = phDefaults.cx;
+        cy = phDefaults.cy ?? 500000;
       } else {
         x = 0; y = 0; cx = 1000000; cy = 500000;
       }
@@ -192,20 +239,39 @@ export class TextExtractor {
   }
 }
 
-function extractRunsFromParagraph(p: Element, themeColors: Record<string, string>): ParsedRun[] {
+/**
+ * Match a slide placeholder to its layout/master definition.
+ * Tries idx first (more specific), then type (well-known placeholders like title/body).
+ */
+function resolvePlaceholder(ph: Element | null, defaults?: Map<string, PlaceholderDefaults>): PlaceholderDefaults | undefined {
+  if (!ph || !defaults) return undefined;
+  const idx = ph.getAttribute("idx");
+  const type = ph.getAttribute("type");
+  if (idx) {
+    const byIdx = defaults.get(`idx:${idx}`);
+    if (byIdx) return byIdx;
+  }
+  if (type) {
+    const byType = defaults.get(`type:${type}`);
+    if (byType) return byType;
+  }
+  return undefined;
+}
+
+function extractRunsFromParagraph(p: Element, themeColors: Record<string, string>, textDefaults?: TextRunDefaults): ParsedRun[] {
   const runs: ParsedRun[] = [];
   for (const child of Array.from(p.childNodes) as any[]) {
     if (!(child instanceof Element)) continue;
     const ln = child.localName;
     if (ln === "r") {
-      runs.push(parseTextRun(child, themeColors));
+      runs.push(parseTextRun(child, themeColors, textDefaults));
     } else if (ln === "br") {
       runs.push({ text: "\n", isBreak: true });
     } else if (ln === "fld") {
       const t = child.getElementsByTagNameNS("*", "t")[0]?.textContent ?? "";
       if (t) {
         const rPr = child.getElementsByTagNameNS("*", "rPr")[0] ?? null;
-        runs.push(buildRunFromProps(t, rPr, themeColors));
+        runs.push(buildRunFromProps(t, rPr, themeColors, textDefaults));
       }
     } else if (ln === "tab") {
       runs.push({ text: "\t" });
@@ -214,29 +280,53 @@ function extractRunsFromParagraph(p: Element, themeColors: Record<string, string
   return runs;
 }
 
-function parseTextRun(r: Element, themeColors: Record<string, string>): ParsedRun {
+function parseTextRun(r: Element, themeColors: Record<string, string>, textDefaults?: TextRunDefaults): ParsedRun {
   const rPr = r.getElementsByTagNameNS("*", "rPr")[0] ?? null;
   const text = r.getElementsByTagNameNS("*", "t")[0]?.textContent ?? "";
-  return buildRunFromProps(text, rPr, themeColors);
+  return buildRunFromProps(text, rPr, themeColors, textDefaults);
 }
 
-function buildRunFromProps(text: string, rPr: Element | null, themeColors: Record<string, string>): ParsedRun {
-  if (!rPr) return { text };
-  const bold = rPr.getAttribute("b") === "1" || undefined;
-  const italic = rPr.getAttribute("i") === "1" || undefined;
+/**
+ * Extract formatting from a run's <a:rPr>, falling back to inherited defaults
+ * for any property the run doesn't explicitly set.
+ */
+function buildRunFromProps(text: string, rPr: Element | null, themeColors: Record<string, string>, textDefaults?: TextRunDefaults): ParsedRun {
+  if (!rPr) {
+    return {
+      text,
+      bold: textDefaults?.bold || undefined,
+      italic: textDefaults?.italic || undefined,
+      color: textDefaults?.color,
+      fontSize: textDefaults?.fontSize,
+      fontFamily: textDefaults?.fontFamily,
+    };
+  }
+
+  // Distinguish "not set" (null) from "explicitly off" ("0") vs "on" ("1")
+  const bAttr = rPr.getAttribute("b");
+  const bold = bAttr === "1" ? true : bAttr === "0" ? false : textDefaults?.bold;
+
+  const iAttr = rPr.getAttribute("i");
+  const italic = iAttr === "1" ? true : iAttr === "0" ? false : textDefaults?.italic;
+
   const uVal = rPr.getAttribute("u");
   const underline = uVal && uVal !== "none" ? true : undefined;
+
   const solidFill = rPr.querySelector("*|solidFill");
-  const color = XmlHelper.getColorFromElement(solidFill || null, themeColors);
+  const color = XmlHelper.getColorFromElement(solidFill || null, themeColors) ?? textDefaults?.color;
+
   let fontSize: number | undefined;
   const sz = rPr.getAttribute("sz");
   if (sz) {
     const n = parseInt(sz, 10);
     if (Number.isFinite(n)) fontSize = n / 100;
   }
+  fontSize = fontSize ?? textDefaults?.fontSize;
+
   const latin = rPr.getElementsByTagNameNS("*", "latin")[0];
-  const fontFamily = latin?.getAttribute("typeface") || undefined;
-  return { text, bold, italic, underline, color, fontSize, fontFamily };
+  const fontFamily = latin?.getAttribute("typeface") || textDefaults?.fontFamily || undefined;
+
+  return { text, bold: bold || undefined, italic: italic || undefined, underline, color, fontSize, fontFamily };
 }
 
 function buildRichHtml(
