@@ -1,6 +1,13 @@
 import { ImageElement } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
+import { parseCustGeom } from "../core/custGeom";
 import JSZip from "jszip";
+
+export interface ThemeImageContext {
+  themeDoc: Document | null;
+  themeRels: Document | null;
+  themeBasePath?: string;
+}
 
 /**
  * Responsible for extracting image elements from a slide XML node.
@@ -18,7 +25,8 @@ export class ImageExtractor {
     rels: Document,
     zip: JSZip,
     basePath: string = "ppt/slides",
-    options: { imageSource?: "data-uri" | "zip-path" } = {}
+    options: { imageSource?: "data-uri" | "zip-path" } = {},
+    themeContext?: ThemeImageContext
   ): Promise<ImageElement[]> {
     if (!spTree) return [];
 
@@ -26,49 +34,165 @@ export class ImageExtractor {
 
     const pics = spTree.getElementsByTagNameNS("*", "pic");
     for (const pic of Array.from(pics)) {
-      const blip = pic.getElementsByTagNameNS("*", "blip")[0];
-      const embedId = blip?.getAttribute("r:embed") ?? "";
-      if (!embedId) continue;
+      const el = await this.extractFromPic(pic, rels, zip, basePath, options);
+      if (el) elements.push(el);
+    }
 
-      const relEl = (rels && (rels as any).getElementsByTagName) ? (function(){
-        const els = rels.getElementsByTagName("Relationship");
-        for (const e of Array.from(els)) { if (e.getAttribute("Id") === embedId) return e as Element; }
-        return null;
-      })() : null;
-      const relTarget = relEl?.getAttribute("Target");
-      if (!relTarget) continue;
-
-      const normalizedPath = this.normalizePath(relTarget, basePath);
-      const imageFile = zip.file(normalizedPath);
-      if (!imageFile) continue;
-
-      const src = options.imageSource === "zip-path"
-        ? normalizedPath
-        : await this.toDataUri(imageFile, normalizedPath);
-
-      const xfrm = pic.getElementsByTagNameNS("*", "xfrm")[0];
-
-      const off = xfrm?.getElementsByTagNameNS("*", "off")[0];
-      const ext = xfrm?.getElementsByTagNameNS("*", "ext")[0];
-
-      const x = off ? XmlHelper.getAttrAsNumber(off, "x") : 0;
-      const y = off ? XmlHelper.getAttrAsNumber(off, "y") : 0;
-
-      const cx = ext ? XmlHelper.getAttrAsNumber(ext, "cx") : 1000000;
-      const cy = ext ? XmlHelper.getAttrAsNumber(ext, "cy") : 500000;
-
-      const element: ImageElement = {
-        type: "image",
-        relId: embedId,
-        src,
-        position: { x, y },
-        size: { width: cx, height: cy }
-      };
-
-      elements.push(element);
+    const shapes = spTree.getElementsByTagNameNS("*", "sp");
+    for (const shape of Array.from(shapes)) {
+      const el = await this.extractFromShape(shape, rels, zip, basePath, options, themeContext);
+      if (el) elements.push(el);
     }
 
     return elements;
+  }
+
+  private static async extractFromPic(
+    pic: Element,
+    rels: Document,
+    zip: JSZip,
+    basePath: string,
+    options: { imageSource?: "data-uri" | "zip-path" }
+  ): Promise<ImageElement | null> {
+    const blipFill = pic.getElementsByTagNameNS("*", "blipFill")[0];
+    const blip = blipFill?.getElementsByTagNameNS("*", "blip")[0]
+      ?? pic.getElementsByTagNameNS("*", "blip")[0];
+    if (!blip) return null;
+
+    const src = await this.resolveBlip(blip, rels, zip, basePath, options);
+    if (!src) return null;
+
+    const xfrm = pic.getElementsByTagNameNS("*", "xfrm")[0];
+    const { x, y, cx, cy } = this.readTransform(xfrm);
+    const embedId = blip.getAttribute("r:embed") ?? blip.getAttribute("r:link") ?? "";
+    const spPr = pic.getElementsByTagNameNS("*", "spPr")[0];
+    const customGeometry = parseCustGeom(spPr ?? null) ?? undefined;
+
+    return {
+      type: "image",
+      relId: embedId,
+      src,
+      position: { x, y },
+      size: { width: cx, height: cy },
+      customGeometry,
+    };
+  }
+
+  private static async extractFromShape(
+    shape: Element,
+    rels: Document,
+    zip: JSZip,
+    basePath: string,
+    options: { imageSource?: "data-uri" | "zip-path" },
+    themeContext?: ThemeImageContext
+  ): Promise<ImageElement | null> {
+    const spPr = shape.getElementsByTagNameNS("*", "spPr")[0];
+    let blipFill = spPr?.getElementsByTagNameNS("*", "blipFill")[0] ?? null;
+    let blipRels = rels;
+    let blipBase = basePath;
+
+    if (!blipFill && themeContext?.themeDoc && themeContext.themeRels) {
+      const style = shape.getElementsByTagNameNS("*", "style")[0];
+      const fillRef = style?.getElementsByTagNameNS("*", "fillRef")[0];
+      const idx = parseInt(fillRef?.getAttribute("idx") || "0", 10);
+      if (idx > 0 && idx !== 1000) {
+        const themeFill = XmlHelper.getThemeFillElement(themeContext.themeDoc, idx);
+        if (themeFill?.localName === "blipFill") {
+          blipFill = themeFill;
+          blipRels = themeContext.themeRels;
+          blipBase = themeContext.themeBasePath ?? "ppt/theme";
+        }
+      }
+    }
+
+    if (!blipFill) return null;
+
+    const blip = blipFill.getElementsByTagNameNS("*", "blip")[0];
+    if (!blip) return null;
+
+    const src = await this.resolveBlip(blip, blipRels, zip, blipBase, options);
+    if (!src) return null;
+
+    const xfrm = shape.getElementsByTagNameNS("*", "xfrm")[0];
+    const { x, y, cx, cy } = this.readTransform(xfrm);
+    const embedId = blip.getAttribute("r:embed") ?? blip.getAttribute("r:link") ?? "";
+
+    const customGeometry = parseCustGeom(spPr ?? null) ?? undefined;
+
+    return {
+      type: "image",
+      relId: embedId,
+      src,
+      position: { x, y },
+      size: { width: cx, height: cy },
+      customGeometry,
+    };
+  }
+
+  static async resolveBlip(
+    blip: Element,
+    rels: Document | null,
+    zip: JSZip,
+    basePath: string,
+    options: { imageSource?: "data-uri" | "zip-path" } = {}
+  ): Promise<string | null> {
+    if (!rels) return null;
+
+    const embedId = blip.getAttribute("r:embed") ?? blip.getAttribute("r:link") ?? "";
+    if (!embedId) return null;
+
+    const rel = XmlHelper.findRelationshipById(rels, embedId);
+    const target = rel?.getAttribute("Target");
+    if (!target) return null;
+
+    const candidates = [
+      this.normalizePath(target, basePath),
+      target.replace(/^\.\.\//, ""),
+      target.startsWith("/") ? target.slice(1) : null,
+    ].filter((p): p is string => Boolean(p));
+
+    const baseName = target.split("/").pop();
+    if (baseName) {
+      candidates.push(`ppt/media/${baseName}`);
+    }
+
+    let imageFile: JSZip.JSZipObject | null = null;
+    let normalizedPath = candidates[0];
+    for (const candidate of candidates) {
+      const file = zip.file(candidate);
+      if (file) {
+        imageFile = file;
+        normalizedPath = candidate;
+        break;
+      }
+    }
+
+    if (!imageFile && baseName) {
+      const match = Object.keys(zip.files).find(
+        (p) => p.endsWith(`/${baseName}`) && !zip.files[p].dir
+      );
+      if (match) {
+        imageFile = zip.file(match)!;
+        normalizedPath = match;
+      }
+    }
+
+    if (!imageFile) return null;
+
+    return options.imageSource === "zip-path"
+      ? normalizedPath
+      : await this.toDataUri(imageFile, normalizedPath);
+  }
+
+  private static readTransform(xfrm: Element | null | undefined): { x: number; y: number; cx: number; cy: number } {
+    const off = xfrm?.getElementsByTagNameNS("*", "off")[0];
+    const ext = xfrm?.getElementsByTagNameNS("*", "ext")[0];
+    return {
+      x: off ? XmlHelper.getAttrAsNumber(off, "x") : 0,
+      y: off ? XmlHelper.getAttrAsNumber(off, "y") : 0,
+      cx: ext ? XmlHelper.getAttrAsNumber(ext, "cx") : 1000000,
+      cy: ext ? XmlHelper.getAttrAsNumber(ext, "cy") : 500000,
+    };
   }
 
   /**

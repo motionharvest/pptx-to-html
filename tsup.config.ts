@@ -9,4 +9,6 @@ export default defineConfig({
   clean: true,
   dts: true,
   minify: false,
+  // Single output file — avoids hashed chunk files (e.g. XmlHelper-*.js) going missing after rebuilds
+  splitting: false,
 });

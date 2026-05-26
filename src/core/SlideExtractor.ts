@@ -1,7 +1,7 @@
 import JSZip from "jszip";
 import { XmlHelper } from "./XmlHelper";
 import { TextExtractor, PlaceholderDefaults } from "../elements/TextExtractor";
-import { ImageExtractor } from "../elements/ImageExtractor";
+import { ImageExtractor, ThemeImageContext } from "../elements/ImageExtractor";
 import { ShapeExtractor } from "../elements/ShapeExtractor";
 import { TableExtractor } from "../elements/TableExtractor";
 import { ChartExtractor } from "../elements/ChartExtractor";
@@ -26,6 +26,14 @@ export class SlideExtractor {
     const themeXml = themeXmlStr ? XmlHelper.parseXml(themeXmlStr) : null;
     const themeColors = XmlHelper.extractThemeColors(themeXml);
     const themeTableStyles = XmlHelper.extractThemeTableStyles(themeXml);
+    const themeRelsPath = "ppt/theme/_rels/theme1.xml.rels";
+    const themeRelsStr = await this.zip.file(themeRelsPath)?.async("string");
+    const themeRelsXml = themeRelsStr ? XmlHelper.parseXml(themeRelsStr) : null;
+    const themeContext: ThemeImageContext = {
+      themeDoc: themeXml,
+      themeRels: themeRelsXml,
+      themeBasePath: "ppt/theme",
+    };
 
     const slidePaths = Object.keys(this.zip.files)
       .filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f))
@@ -96,23 +104,23 @@ export class SlideExtractor {
       }
 
       // Extract background from slide/layout/master (slide overrides layout overrides master)
-      const slideBg = await this.extractBackground(slideXml, relsXml, "ppt/slides", this.zip, themeColors);
-      const layoutBg = layoutRelsXml ? await this.extractBackground(layoutSpTree?.ownerDocument || null, layoutRelsXml, "ppt/slideLayouts", this.zip, themeColors) : null;
-      const masterBg = masterRelsXml ? await this.extractBackground(masterSpTree?.ownerDocument || null, masterRelsXml, "ppt/slideMasters", this.zip, themeColors) : null;
+      const slideBg = await this.extractBackground(slideXml, relsXml, "ppt/slides", this.zip, themeColors, themeXml, themeRelsXml);
+      const layoutBg = layoutRelsXml ? await this.extractBackground(layoutSpTree?.ownerDocument || null, layoutRelsXml, "ppt/slideLayouts", this.zip, themeColors, themeXml, themeRelsXml) : null;
+      const masterBg = masterRelsXml ? await this.extractBackground(masterSpTree?.ownerDocument || null, masterRelsXml, "ppt/slideMasters", this.zip, themeColors, themeXml, themeRelsXml) : null;
       const bgElement = slideBg || layoutBg || masterBg;
 
       // Extract elements from master → layout → slide (respecting z-order: back to front)
       const masterText = masterSpTree ? TextExtractor.extract(masterSpTree, themeColors, { context: "master" }) : [];
       const masterImages = masterSpTree && masterRelsXml
-        ? await ImageExtractor.extract(masterSpTree, masterRelsXml, this.zip, "ppt/slideMasters", this.options)
+        ? await ImageExtractor.extract(masterSpTree, masterRelsXml, this.zip, "ppt/slideMasters", this.options, themeContext)
         : [];
-      const masterShapes = masterSpTree ? ShapeExtractor.extract(masterSpTree, themeColors) : [];
+      const masterShapes = masterSpTree ? ShapeExtractor.extract(masterSpTree, themeColors, themeXml) : [];
 
       const layoutText = layoutSpTree ? TextExtractor.extract(layoutSpTree, themeColors, { context: "layout" }) : [];
       const layoutImages = layoutSpTree && layoutRelsXml
-        ? await ImageExtractor.extract(layoutSpTree, layoutRelsXml, this.zip, "ppt/slideLayouts", this.options)
+        ? await ImageExtractor.extract(layoutSpTree, layoutRelsXml, this.zip, "ppt/slideLayouts", this.options, themeContext)
         : [];
-      const layoutShapes = layoutSpTree ? ShapeExtractor.extract(layoutSpTree, themeColors) : [];
+      const layoutShapes = layoutSpTree ? ShapeExtractor.extract(layoutSpTree, themeColors, themeXml) : [];
 
       const masterDefaults = this.extractPlaceholderDefaults(masterSpTree, themeColors);
       const layoutDefaults = this.extractPlaceholderDefaults(layoutSpTree, themeColors);
@@ -130,10 +138,10 @@ export class SlideExtractor {
         }
       }
       const slideText = TextExtractor.extract(spTree, themeColors, { context: "slide", placeholderDefaults: mergedDefaults });
-      const slideImages = await ImageExtractor.extract(spTree, relsXml, this.zip, "ppt/slides", this.options);
+      const slideImages = await ImageExtractor.extract(spTree, relsXml, this.zip, "ppt/slides", this.options, themeContext);
       const slideTables = TableExtractor.extract(spTree, themeColors, themeTableStyles);
       const slideCharts = await ChartExtractor.extract(spTree, relsXml, this.zip, themeColors);
-      const slideShapes = ShapeExtractor.extract(spTree, themeColors);
+      const slideShapes = ShapeExtractor.extract(spTree, themeColors, themeXml);
 
       slides.push([
         ...(bgElement ? [bgElement] : []),
@@ -235,50 +243,80 @@ export class SlideExtractor {
     rels: Document | null,
     baseDir: string,
     zip: JSZip,
-    themeColors: Record<string, string>
+    themeColors: Record<string, string>,
+    themeDoc: Document | null = null,
+    themeRels: Document | null = null
   ): Promise<SlideElement | null> {
     if (!doc) return null;
     const bg = doc.getElementsByTagNameNS("*", "bg")[0];
     if (!bg) return null;
 
-    // Try solid fill
     const bgPr = bg.getElementsByTagNameNS("*", "bgPr")[0] || null;
+    const bgRef = bg.getElementsByTagNameNS("*", "bgRef")[0] || null;
+
+    // Direct solid fill on bgPr
     const solidFill = bgPr?.getElementsByTagNameNS("*", "solidFill")[0] || null;
     const color = XmlHelper.getColorFromElement(solidFill, themeColors);
     if (color) {
       return { type: "background", fillColor: color } as SlideElement;
     }
 
-    // Try scheme color via bgRef
-    const bgRef = bg.getElementsByTagNameNS("*", "bgRef")[0] || null;
-    const schemeClr = bgRef?.getElementsByTagNameNS("*", "schemeClr")[0] || null;
-    const schemeVal = schemeClr?.getAttribute("val") || undefined;
-    if (schemeVal && themeColors[schemeVal]) {
-      return { type: "background", fillColor: themeColors[schemeVal] } as SlideElement;
-    }
+    // Direct image fill on bgPr
+    const bgPrImage = await this.backgroundFromBlipFill(
+      bgPr?.getElementsByTagNameNS("*", "blipFill")[0] || null,
+      rels,
+      baseDir,
+      zip
+    );
+    if (bgPrImage) return bgPrImage;
 
-    // Try image fill
-    const blipFill = bgPr?.getElementsByTagNameNS("*", "blipFill")[0] || null;
-    const blip = blipFill?.getElementsByTagNameNS("*", "blip")[0] || null;
-    const embedId = blip?.getAttribute("r:embed") || undefined;
-    if (embedId && rels) {
-      const rel = XmlHelper.findRelationshipById(rels, embedId);
-      const target = rel?.getAttribute("Target") || undefined;
-      if (target) {
-        const fullPath = this.resolvePath(target, baseDir);
-        const file = zip.file(fullPath);
-        if (file) {
-          if (this.options.imageSource === "zip-path") {
-            return { type: "background", imageSrc: fullPath } as SlideElement;
+    // bgRef → theme style matrix (common on slide masters)
+    if (bgRef && themeDoc) {
+      const idx = parseInt(bgRef.getAttribute("idx") || "0", 10);
+      if (idx > 0 && idx !== 1000) {
+        const themeFill = XmlHelper.getThemeFillElement(themeDoc, idx);
+        if (themeFill) {
+          if (themeFill.localName === "solidFill") {
+            const themeColor = XmlHelper.getColorFromElement(themeFill, themeColors);
+            if (themeColor) {
+              return { type: "background", fillColor: themeColor } as SlideElement;
+            }
           }
-          const binary = await file.async("base64");
-          const ext = fullPath.split(".").pop()?.toLowerCase() || "png";
-          const dataUri = `data:image/${ext};base64,${binary}`;
-          return { type: "background", imageSrc: dataUri } as SlideElement;
+          if (themeFill.localName === "blipFill" && themeRels) {
+            const themeImage = await this.backgroundFromBlipFill(
+              themeFill,
+              themeRels,
+              "ppt/theme",
+              zip
+            );
+            if (themeImage) return themeImage;
+          }
         }
+      }
+
+      // Fallback: scheme tint only (no picture resolved)
+      const schemeClr = bgRef.getElementsByTagNameNS("*", "schemeClr")[0] || null;
+      const schemeVal = schemeClr?.getAttribute("val") || undefined;
+      if (schemeVal && themeColors[schemeVal]) {
+        return { type: "background", fillColor: themeColors[schemeVal] } as SlideElement;
       }
     }
 
     return null;
+  }
+
+  private async backgroundFromBlipFill(
+    blipFill: Element | null,
+    rels: Document | null,
+    baseDir: string,
+    zip: JSZip
+  ): Promise<SlideElement | null> {
+    const blip = blipFill?.getElementsByTagNameNS("*", "blip")[0] || null;
+    if (!blip || !rels) return null;
+
+    const imageSrc = await ImageExtractor.resolveBlip(blip, rels, zip, baseDir, this.options);
+    if (!imageSrc) return null;
+
+    return { type: "background", imageSrc } as SlideElement;
   }
 }

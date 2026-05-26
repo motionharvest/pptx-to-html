@@ -6,7 +6,8 @@
     "prestart": "npm run build --prefix ..",
     "start": "tsx server.ts",
     "predev": "npm run build --prefix ..",
-    "dev": "tsx watch server.ts"
+    "dev": "tsx watch server.ts",
+    "test:reference": "npm run build --prefix .. && node test-reference-deck.mjs"
   },
   "dependencies": {
     "busboy": "^1.6.0",

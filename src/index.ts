@@ -1,5 +1,6 @@
 import { PptxReader } from "./core/PptxReader";
 import { HtmlRenderer } from "./renderer/HtmlRenderer";
+import { XmlHelper } from "./core/XmlHelper";
 
 export type ImageSourceMode = "data-uri" | "zip-path";
 export interface PptxToHtmlConfig {
@@ -27,7 +28,6 @@ export async function pptxToHtml(
 ): Promise<string[]> {
   // Optional DOM parser injection for Node environments without global DOMParser
   if (config?.domParserFactory) {
-    const { XmlHelper } = await import("./core/XmlHelper");
     XmlHelper.setDomParser(config.domParserFactory as any);
   }
   const reader = new PptxReader();

@@ -8,6 +8,7 @@ storybook.log
 /coverage/
 
 # Import test server (generated uploads and converted output)
+/import-test/reference/
 /import-test/output/
 /import-test/node_modules/
 

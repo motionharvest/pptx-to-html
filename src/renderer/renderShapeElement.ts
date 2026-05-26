@@ -1,5 +1,6 @@
 import { ShapeElement } from "../models/SlideElement";
 import { getSvgPathForShape } from "./shapePathMap";
+import { emuToPx, renderCustGeomSvg } from "./renderCustGeom";
 
 /**
  * Renders a shape element as an absolutely positioned HTML or SVG element.
@@ -8,11 +9,24 @@ import { getSvgPathForShape } from "./shapePathMap";
  * @returns HTML string representing the shape.
  */
 export function renderShapeElement(el: ShapeElement, options: { scaleStrokes?: boolean } = {}): string {
-    const nf = (n: number, fb = 0) => (Number.isFinite(n) ? n : fb);
-    const x = nf(el.position?.x, 0) / 9525;
-    const y = nf(el.position?.y, 0) / 9525;
-    const width = nf(el.size?.width, 0) / 9525;
-    const height = nf(el.size?.height, 0) / 9525;
+    const x = emuToPx(el.position?.x ?? 0);
+    const y = emuToPx(el.position?.y ?? 0);
+    const width = emuToPx(el.size?.width ?? 0);
+    const height = emuToPx(el.size?.height ?? 0);
+
+    if (el.customGeometry) {
+      return renderCustGeomSvg({
+        x,
+        y,
+        width,
+        height,
+        geom: el.customGeometry,
+        fill: el.fillColor,
+        stroke: el.borderColor,
+        strokeWidthPx: el.strokeWidth,
+        rotationDeg: el.rotationDeg && !isNaN(el.rotationDeg) ? el.rotationDeg : undefined,
+      });
+    }
 
     const rotation = el.rotationDeg && !isNaN(el.rotationDeg) ? el.rotationDeg : 0;
     const rotationStyle = rotation ? `transform: rotate(${rotation}deg); transform-origin: center;` : "";

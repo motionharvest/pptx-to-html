@@ -457,12 +457,50 @@ function renderResultsPage(result: ImportResult): string {
 `;
 }
 
+async function collectMediaPathsFromZipAsync(zip: JSZip): Promise<string[]> {
+  const paths = new Set<string>();
+
+  for (const zipPath of Object.keys(zip.files)) {
+    if (zipPath.startsWith("ppt/media/") && !zip.files[zipPath].dir) {
+      paths.add(zipPath);
+    }
+  }
+
+  for (const zipPath of Object.keys(zip.files)) {
+    if (!zipPath.endsWith(".rels") || zip.files[zipPath].dir) continue;
+
+    const relsXml = await zip.file(zipPath)!.async("string");
+    const relsDir = zipPath.replace("/_rels/", "/").replace(".rels", "");
+    const baseDir = relsDir.includes("/") ? relsDir.slice(0, relsDir.lastIndexOf("/")) : relsDir;
+
+    const targets = relsXml.match(/Target="([^"]+)"/g) ?? [];
+    for (const raw of targets) {
+      const target = raw.slice(8, -1);
+      const lower = target.toLowerCase();
+      if (!/\.(png|jpe?g|gif|bmp|tif{1,2}|emf|wmf|svg|webp)$/i.test(lower)) continue;
+
+      const parts = (baseDir + "/" + target).split("/");
+      const resolved: string[] = [];
+      for (const part of parts) {
+        if (part === "..") resolved.pop();
+        else if (part !== "." && part !== "") resolved.push(part);
+      }
+      const full = resolved.join("/");
+      if (zip.files[full] && !zip.files[full].dir) {
+        paths.add(full);
+      }
+    }
+  }
+
+  return [...paths];
+}
+
 async function extractMedia(
   buffer: ArrayBuffer,
   mediaDir: string
 ): Promise<{ files: string[]; pathMap: Map<string, string> }> {
   const zip = await JSZip.loadAsync(buffer);
-  const mediaPaths = Object.keys(zip.files).filter((path) => path.startsWith("ppt/media/") && !zip.files[path].dir);
+  const mediaPaths = await collectMediaPathsFromZipAsync(zip);
 
   await mkdir(mediaDir, { recursive: true });
 

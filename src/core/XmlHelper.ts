@@ -208,4 +208,47 @@ export class XmlHelper {
     }
     return null;
   }
+
+  /**
+   * Resolves a fill style from the theme format scheme by style-matrix index.
+   * idx 1–999 → fillStyleLst; idx 1001+ → bgFillStyleLst (1001 = first entry).
+   */
+  static getThemeFillElement(themeDoc: Document | null, idx: number): Element | null {
+    if (!themeDoc || !idx || idx === 1000) return null;
+
+    const fmtScheme = themeDoc.getElementsByTagNameNS("*", "fmtScheme")[0];
+    if (!fmtScheme) return null;
+
+    if (idx >= 1001) {
+      const lst = fmtScheme.getElementsByTagNameNS("*", "bgFillStyleLst")[0];
+      if (!lst) return null;
+      const children = Array.from(lst.children);
+      return children[idx - 1001] ?? null;
+    }
+
+    if (idx >= 1 && idx <= 999) {
+      const lst = fmtScheme.getElementsByTagNameNS("*", "fillStyleLst")[0];
+      if (!lst) return null;
+      const children = Array.from(lst.children);
+      return children[idx - 1] ?? null;
+    }
+
+    return null;
+  }
+
+  /** True when a shape's fill is (or references) a picture fill handled by ImageExtractor. */
+  static shapeHasPictureFill(shape: Element, themeDoc: Document | null): boolean {
+    const spPr = shape.getElementsByTagNameNS("*", "spPr")[0];
+    if (spPr?.getElementsByTagNameNS("*", "blipFill")[0]) return true;
+
+    const style = shape.getElementsByTagNameNS("*", "style")[0];
+    const fillRef = style?.getElementsByTagNameNS("*", "fillRef")[0];
+    const idx = parseInt(fillRef?.getAttribute("idx") || "0", 10);
+    if (idx > 0 && idx !== 1000 && themeDoc) {
+      const fillEl = XmlHelper.getThemeFillElement(themeDoc, idx);
+      if (fillEl?.localName === "blipFill") return true;
+    }
+
+    return false;
+  }
 }

@@ -1,5 +1,6 @@
 import { ShapeElement, LineElement } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
+import { parseCustGeom } from "../core/custGeom";
 
 /**
  * Responsible for extracting shape elements (including connectors) from a slide XML node.
@@ -11,7 +12,11 @@ export class ShapeExtractor {
    * @param themeColors Theme color mapping.
    * @returns List of ShapeElement extracted.
    */
-  static extract(spTree: Element | null, themeColors: Record<string, string>): ShapeElement[] {
+  static extract(
+    spTree: Element | null,
+    themeColors: Record<string, string>,
+    themeDoc: Document | null = null
+  ): ShapeElement[] {
     if (!spTree) return [];
 
     const elements: ShapeElement[] = [];
@@ -22,6 +27,14 @@ export class ShapeExtractor {
     ];
 
     for (const shape of allShapes) {
+      const spPr = shape.getElementsByTagNameNS("*", "spPr")[0];
+      const customGeometry = parseCustGeom(spPr ?? null) ?? undefined;
+      const hasPictureFill = shape.localName === "sp" && XmlHelper.shapeHasPictureFill(shape, themeDoc);
+      // Picture-only shapes go to ImageExtractor; custGeom shapes stay here as SVG fallback
+      if (hasPictureFill && !customGeometry) {
+        continue;
+      }
+
       const xfrm = shape.getElementsByTagNameNS("*", "xfrm")[0];
       const off = xfrm?.getElementsByTagNameNS("*", "off")[0];
       const ext = xfrm?.getElementsByTagNameNS("*", "ext")[0];
@@ -36,9 +49,7 @@ export class ShapeExtractor {
       const flipV = xfrm?.getAttribute("flipV") === "1";
 
       const prstGeom = shape.getElementsByTagNameNS("*", "prstGeom")[0];
-      const shapeType = prstGeom?.getAttribute("prst") ?? "rect";
-
-      const spPr = shape.getElementsByTagNameNS("*", "spPr")[0];
+      const shapeType = customGeometry ? "custom" : (prstGeom?.getAttribute("prst") ?? "rect");
 
       let fillColor = "transparent";
       let borderColor = "transparent";
@@ -48,7 +59,11 @@ export class ShapeExtractor {
 
       if (spPr) {
         const solidFill = spPr.getElementsByTagNameNS("*", "solidFill")[0] ?? null;
-        fillColor = XmlHelper.getColorFromElement(solidFill, themeColors) ?? "transparent";
+        const gradFill = spPr.getElementsByTagNameNS("*", "gradFill")[0] ?? null;
+        fillColor =
+          XmlHelper.getColorFromElement(solidFill, themeColors)
+          ?? XmlHelper.getColorFromElement(gradFill?.getElementsByTagNameNS("*", "gs")[0] ?? null, themeColors)
+          ?? "transparent";
 
         const ln = spPr.getElementsByTagNameNS("*", "ln")[0];
         const borderFill = ln?.getElementsByTagNameNS("*", "solidFill")[0] ?? null;
@@ -129,6 +144,7 @@ export class ShapeExtractor {
         rotationDeg,
         headEnd,
         tailEnd,
+        customGeometry,
       };
 
       elements.push(element);

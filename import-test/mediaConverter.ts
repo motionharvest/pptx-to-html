@@ -142,5 +142,7 @@ export function rewriteMediaPaths(html: string, pathMap: Map<string, string>): s
     }
   }
 
-  return result.replace(/ppt\/media\//g, "media/");
+  return result
+    .replace(/ppt\/media\//g, "media/")
+    .replace(/ppt\/theme\/media\//g, "media/");
 }

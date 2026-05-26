@@ -29,12 +29,20 @@ export interface TextElement {
   lineHeight?: number;
 }
 
+export interface CustomGeometry {
+  viewBoxW: number;
+  viewBoxH: number;
+  paths: Array<{ d: string; fillMode?: string }>;
+}
+
 export interface ImageElement {
   type: "image";
   relId: string;
   src: string;
   position: Position;
   size: Size;
+  /** When set, image is clipped to custom geometry paths (a:custGeom). */
+  customGeometry?: CustomGeometry;
 }
 
 export interface ShapeElement {
@@ -48,6 +56,8 @@ export interface ShapeElement {
   rotationDeg?: number;
   headEnd?: { type?: string; w?: string; len?: string };
   tailEnd?: { type?: string; w?: string; len?: string };
+  /** Vector paths from a:custGeom (rendered as SVG, not a preset rect). */
+  customGeometry?: CustomGeometry;
 }
 
 export interface LineElement {
