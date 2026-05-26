@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PPTX Import Test</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+        line-height: 1.5;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+
+      main {
+        width: min(560px, calc(100vw - 2rem));
+        padding: 2rem;
+        border-radius: 1rem;
+        background: #1e293b;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+      }
+
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.5rem;
+      }
+
+      p {
+        margin: 0 0 1.5rem;
+        color: #94a3b8;
+      }
+
+      form {
+        display: grid;
+        gap: 1rem;
+      }
+
+      label {
+        display: grid;
+        gap: 0.5rem;
+        padding: 1.25rem;
+        border: 2px dashed #475569;
+        border-radius: 0.75rem;
+        cursor: pointer;
+        text-align: center;
+      }
+
+      label:hover,
+      label.dragover {
+        border-color: #38bdf8;
+        background: rgba(56, 189, 248, 0.08);
+      }
+
+      input[type="file"] {
+        display: none;
+      }
+
+      button {
+        border: 0;
+        border-radius: 0.75rem;
+        padding: 0.85rem 1rem;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        background: #38bdf8;
+        color: #0f172a;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .status {
+        min-height: 1.25rem;
+        font-size: 0.95rem;
+      }
+
+      .status.error {
+        color: #fca5a5;
+      }
+
+      .status.success {
+        color: #86efac;
+      }
+
+      .recent-imports {
+        margin-top: 1.75rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid #334155;
+      }
+
+      .recent-imports h2 {
+        margin: 0 0 0.75rem;
+        font-size: 0.85rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #64748b;
+      }
+
+      .recent-imports ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .recent-imports a {
+        display: block;
+        padding: 0.65rem 0.75rem;
+        border-radius: 0.65rem;
+        background: #0f172a;
+        color: #38bdf8;
+        text-decoration: none;
+      }
+
+      .recent-imports a:hover {
+        background: #172033;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>PPTX Import Test</h1>
+      <p>
+        Upload a presentation to extract media into a local folder and write one HTML file per slide.
+      </p>
+      <form id="upload-form">
+        <label id="dropzone" for="pptx-file">
+          <span id="file-label">Choose a .pptx file or drag it here</span>
+          <input id="pptx-file" name="pptx" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" required />
+        </label>
+        <button type="submit" id="submit-btn">Import</button>
+        <div class="status" id="status" aria-live="polite"></div>
+      </form>
+      <section class="recent-imports" id="recent-imports" hidden>
+        <h2>Recent imports</h2>
+        <ul id="recent-imports-list"></ul>
+      </section>
+    </main>
+    <script>
+      const form = document.getElementById("upload-form");
+      const fileInput = document.getElementById("pptx-file");
+      const fileLabel = document.getElementById("file-label");
+      const status = document.getElementById("status");
+      const submitBtn = document.getElementById("submit-btn");
+      const dropzone = document.getElementById("dropzone");
+      const recentImports = document.getElementById("recent-imports");
+      const recentImportsList = document.getElementById("recent-imports-list");
+
+      async function loadRecentImports() {
+        try {
+          const response = await fetch("/api/imports");
+          const payload = await response.json();
+          const decks = Array.isArray(payload.decks) ? payload.decks : [];
+          if (!decks.length) return;
+
+          recentImportsList.innerHTML = decks
+            .map((deck) => `<li><a href="/output/${encodeURIComponent(deck)}/">${deck}</a></li>`)
+            .join("");
+          recentImports.hidden = false;
+        } catch {
+          // ignore listing failures on the upload page
+        }
+      }
+
+      void loadRecentImports();
+
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files?.[0];
+        fileLabel.textContent = file ? file.name : "Choose a .pptx file or drag it here";
+      });
+
+      for (const eventName of ["dragenter", "dragover"]) {
+        dropzone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          dropzone.classList.add("dragover");
+        });
+      }
+
+      for (const eventName of ["dragleave", "drop"]) {
+        dropzone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          dropzone.classList.remove("dragover");
+        });
+      }
+
+      dropzone.addEventListener("drop", (event) => {
+        const file = event.dataTransfer?.files?.[0];
+        if (!file) return;
+        fileInput.files = event.dataTransfer.files;
+        fileLabel.textContent = file.name;
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const file = fileInput.files?.[0];
+        if (!file) return;
+
+        submitBtn.disabled = true;
+        status.className = "status";
+        status.textContent = "Importing…";
+
+        try {
+          const body = new FormData();
+          body.append("pptx", file);
+
+          const response = await fetch("/import", { method: "POST", body });
+          const payload = await response.json();
+
+          if (!response.ok) {
+            throw new Error(payload.error || "Import failed");
+          }
+
+          status.className = "status success";
+          status.textContent = `Imported ${payload.slideCount} slide(s) and ${payload.mediaCount} media file(s).`;
+          window.location.href = payload.resultsUrl;
+        } catch (error) {
+          status.className = "status error";
+          status.textContent = error instanceof Error ? error.message : "Import failed";
+          submitBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

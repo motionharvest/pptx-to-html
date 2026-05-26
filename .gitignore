@@ -7,6 +7,10 @@ storybook.log
 /coverage.data
 /coverage/
 
+# Import test server (generated uploads and converted output)
+/import-test/output/
+/import-test/node_modules/
+
 # Build files
 /dist
 examples/vite/node_modules/

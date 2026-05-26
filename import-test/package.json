@@ -1,0 +1,26 @@
+{
+  "name": "pptx-import-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prestart": "npm run build --prefix ..",
+    "start": "tsx server.ts",
+    "predev": "npm run build --prefix ..",
+    "dev": "tsx watch server.ts"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "canvas": "^3.2.3",
+    "emf-converter": "^1.1.7",
+    "jsdom": "^29.1.1",
+    "jszip": "^3.10.1",
+    "upng-js": "^2.1.0",
+    "utif": "^3.1.0"
+  },
+  "devDependencies": {
+    "@types/busboy": "^1.5.4",
+    "@types/node": "^22.15.21",
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.3"
+  }
+}
