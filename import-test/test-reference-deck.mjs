@@ -26,7 +26,7 @@ const html = (await pptxToHtml(buf.buffer.slice(buf.byteOffset, buf.byteOffset +
 const checks = {
   hasBlueSvg: html.includes('fill="#006FCF"'),
   noBlueRect: !html.includes("background-color: #006FCF"),
-  hasGraySvg: html.includes('fill="#D9D9D6"'),
+  noGrayMasterWave: !html.includes('fill="#D9D9D6"'),
   hasSvg: html.includes("<svg"),
   fullWidthWave: /left: 0px;[\s\S]*?width: 1280px/.test(html),
 };
