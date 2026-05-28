@@ -7,10 +7,8 @@ storybook.log
 /coverage.data
 /coverage/
 
-# Import test server (generated uploads and converted output)
-/import-test/reference/
-/import-test/output/
-/import-test/node_modules/
+# Import test (local fixtures, output, and scripts)
+/import-test/
 
 # Build files
 /dist
@@ -19,3 +17,7 @@ examples/vite/dist/
 examples/vite/storybook-static/
 examples/vite/.vite/
 examples/vite/.vite-temp/
+
+# Local agent config
+AGENTS.md
+.codeui/

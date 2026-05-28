@@ -5,6 +5,8 @@ function libWarn(msg: string) {
   }
 }
 
+import { resolveColorFromElement } from "./colorModifiers";
+
 type DomParserLike = { parseFromString(xml: string, mimeType: string): Document };
 
 export class XmlHelper {
@@ -61,41 +63,7 @@ export class XmlHelper {
   }
 
   static getColorFromElement(el: Element | null, themeColors?: Record<string, string>): string | undefined {
-    if (!el) return undefined;
-
-    // 1. Try <srgbClr val="...">
-    const srgb = el.getElementsByTagNameNS("*", "srgbClr")[0];
-    if (srgb) {
-      const val = srgb.getAttribute("val");
-      return val ? `#${val}` : undefined;
-    }
-
-    // 2. Try <schemeClr val="..."> resolved via themeColors (including aliases)
-    const scheme = el.getElementsByTagNameNS("*", "schemeClr")[0];
-    if (scheme) {
-      const val = scheme.getAttribute("val");
-      if (val && themeColors) {
-        // Resolve alias like bg1, bg2, tx1, tx2 to known theme keys
-        const aliasMap: Record<string, string> = {
-          bg1: "lt1",
-          bg2: "lt2",
-          tx1: "dk1",
-          tx2: "dk2"
-        };
-        const resolvedKey = aliasMap[val] || val;
-        return themeColors[resolvedKey];
-      }
-      return undefined;
-    }
-
-    // 3. Try <sysClr lastClr="...">
-    const sys = el.getElementsByTagNameNS("*", "sysClr")[0];
-    if (sys) {
-      const lastClr = sys.getAttribute("lastClr");
-      return lastClr ? `#${lastClr}` : undefined;
-    }
-
-    return undefined;
+    return resolveColorFromElement(el, themeColors);
   }
 
   static extractThemeColors(themeDoc: Document | null): Record<string, string> {
@@ -209,6 +177,54 @@ export class XmlHelper {
     return null;
   }
 
+  /** Resolve color from p:style/a:lnRef or a:fillRef (and theme style matrix when needed). */
+  static resolveStyleRefColor(
+    shape: Element,
+    refName: "lnRef" | "fillRef",
+    themeColors: Record<string, string>,
+    themeDoc: Document | null
+  ): string | undefined {
+    const style = shape.getElementsByTagNameNS("*", "style")[0];
+    const refEl = style?.getElementsByTagNameNS("*", refName)[0] ?? null;
+    if (!refEl) return undefined;
+
+    const idx = parseInt(refEl.getAttribute("idx") || "0", 10);
+    if (!idx) return undefined;
+
+    const direct = XmlHelper.getColorFromElement(refEl, themeColors);
+    if (direct) return direct;
+
+    if (!themeDoc) return undefined;
+
+    const styleEl =
+      refName === "lnRef"
+        ? XmlHelper.getThemeLineElement(themeDoc, idx)
+        : XmlHelper.getThemeFillElement(themeDoc, idx);
+    if (!styleEl) return undefined;
+
+    return XmlHelper.getColorFromElement(styleEl, themeColors);
+  }
+
+  /** Line style entry from theme fmtScheme/a:lnStyleLst (1-based idx). */
+  static getThemeLineElement(themeDoc: Document | null, idx: number): Element | null {
+    if (!themeDoc || !idx) return null;
+    const fmtScheme = themeDoc.getElementsByTagNameNS("*", "fmtScheme")[0];
+    const lst = fmtScheme?.getElementsByTagNameNS("*", "lnStyleLst")[0];
+    if (!lst) return null;
+    const children = Array.from(lst.children);
+    return children[idx - 1] ?? null;
+  }
+
+  /** Effect style entry from theme fmtScheme/a:effectStyleLst (1-based idx). */
+  static getThemeEffectStyleElement(themeDoc: Document | null, idx: number): Element | null {
+    if (!themeDoc || !idx) return null;
+    const fmtScheme = themeDoc.getElementsByTagNameNS("*", "fmtScheme")[0];
+    const lst = fmtScheme?.getElementsByTagNameNS("*", "effectStyleLst")[0];
+    if (!lst) return null;
+    const children = Array.from(lst.children);
+    return children[idx - 1] ?? null;
+  }
+
   /**
    * Resolves a fill style from the theme format scheme by style-matrix index.
    * idx 1–999 → fillStyleLst; idx 1001+ → bgFillStyleLst (1001 = first entry).
@@ -234,6 +250,23 @@ export class XmlHelper {
     }
 
     return null;
+  }
+
+  /**
+   * Whether shapes from the slide master should appear on this slide.
+   * Controlled by showMasterSp on p:sld (per-slide) and p:sldLayout (layout default).
+   * PowerPoint UI: "Hide Background Graphics" sets showMasterSp="0" on the slide.
+   */
+  static shouldShowMasterShapes(slideDoc: Document | null, layoutDoc: Document | null): boolean {
+    const slideRoot = slideDoc?.documentElement;
+    const slideAttr = slideRoot?.getAttribute("showMasterSp");
+    if (slideAttr === "0" || slideAttr === "false") return false;
+
+    const layoutRoot = layoutDoc?.documentElement;
+    const layoutAttr = layoutRoot?.getAttribute("showMasterSp");
+    if (layoutAttr === "0" || layoutAttr === "false") return false;
+
+    return true;
   }
 
   /** True when a shape's fill is (or references) a picture fill handled by ImageExtractor. */

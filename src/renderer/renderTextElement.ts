@@ -1,4 +1,6 @@
 import { TextElement } from "../models/SlideElement";
+import { textRunInlineStyles } from "../core/scriptTextStyle";
+import { TEXT_DIRECTION_CENTER_WRAPPER, textDirectionInnerStyles } from "../core/textDirection";
 
 /**
  * Renders a text element as an absolutely positioned HTML <div>.
@@ -14,24 +16,32 @@ export function renderTextElement(el: TextElement): string {
   const pad = el.padding || { left: 0, top: 0, right: 0, bottom: 0 };
   const textAlign = el.align?.horizontal || "left";
   const justify = el.align?.vertical === "middle" ? "center" : el.align?.vertical === "bottom" ? "flex-end" : "flex-start";
-  const inner = el.html
+  const flowStyles = ["width:100%", "margin:0", "padding:0", "min-height:0", "align-self:stretch"];
+  if (!el.html) {
+    if (el.lineHeight) flowStyles.push(`line-height:${el.lineHeight}`);
+    else if (el.lineHeightPt) flowStyles.push(`line-height:${el.lineHeightPt}pt`);
+  }
+
+  const rawInner = el.html
     ? el.html
     : el.segments?.length
       ? el.segments.map((seg) => {
           const prefix = seg.paragraphBreakBefore ? "<br>" : "";
           if (seg.breakBefore) return `${prefix}<br>`;
-          const styles: string[] = [];
-          if (seg.bold) styles.push("font-weight:bold");
-          if (seg.italic) styles.push("font-style:italic");
-          if (seg.underline) styles.push("text-decoration:underline");
-          if (seg.color) styles.push(`color:${seg.color}`);
-          if (seg.fontSize) styles.push(`font-size:${seg.fontSize}pt`);
-          if (seg.fontFamily) styles.push(`font-family:${seg.fontFamily}`);
+          const styles = textRunInlineStyles(
+            seg,
+            el.font?.name || "Arial",
+            nf(Number(el.font?.size), 12),
+            el.font?.color || "#000",
+          );
           const text = escape(seg.text).replace(/\n/g, "<br>");
           return styles.length > 0 ? `${prefix}<span style="${styles.join(";")}">${text}</span>` : `${prefix}${text}`;
         }).join("")
       : escape(el.content).replace(/\n/g, "<br>");
-  const lineHeight = el.lineHeight ? `line-height: ${el.lineHeight};` : "line-height: 1.0;";
+  const inner = el.textDirection
+    ? `<div style="${TEXT_DIRECTION_CENTER_WRAPPER}"><div style="${textDirectionInnerStyles(el.textDirection).join(";")}">${rawInner}</div></div>`
+    : `<div style="${flowStyles.join(";")}">${rawInner}</div>`;
+
   return `<div style="
     position: absolute;
     left: ${x}px;
@@ -42,12 +52,11 @@ export function renderTextElement(el: TextElement): string {
     flex-direction: column;
     justify-content: ${justify};
     text-align: ${textAlign};
-    line-height: 1.0;
+    line-height: 1;
     padding: ${pad.top}px ${pad.right}px ${pad.bottom}px ${pad.left}px;
     font-family: ${el.font?.name || "Arial"};
     font-size: ${nf(Number(el.font?.size), 12)}pt;
     color: ${el.font?.color || "#000"};
-    ${lineHeight}
     overflow: hidden;
     white-space: pre-wrap;
   ">${inner}</div>`;

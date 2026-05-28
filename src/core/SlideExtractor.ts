@@ -1,11 +1,11 @@
 import JSZip from "jszip";
 import { XmlHelper } from "./XmlHelper";
 import { TextExtractor, PlaceholderDefaults } from "../elements/TextExtractor";
-import { ImageExtractor, ThemeImageContext } from "../elements/ImageExtractor";
-import { ShapeExtractor } from "../elements/ShapeExtractor";
-import { TableExtractor } from "../elements/TableExtractor";
-import { ChartExtractor } from "../elements/ChartExtractor";
-import { SlideElement } from "../models/SlideElement";
+import { SlideElement, ShapeElement, ImageElement } from "../models/SlideElement";
+import { attachBackingShapeFrames } from "./imageFrame";
+import { parseListLevelDefaults } from "./listLevelDefaults";
+import { extractOrderedSpTree, partitionSlideElements } from "./orderedSpTree";
+import { ThemeImageContext } from "../elements/ImageExtractor";
 
 /**
  * Responsible for extracting all slides from the .pptx file as lists of SlideElement.
@@ -33,6 +33,7 @@ export class SlideExtractor {
       themeDoc: themeXml,
       themeRels: themeRelsXml,
       themeBasePath: "ppt/theme",
+      themeColors,
     };
 
     const slidePaths = Object.keys(this.zip.files)
@@ -68,13 +69,14 @@ export class SlideExtractor {
       // Resolve layout from slide rels
       const layoutRel = XmlHelper.findRelationshipByTypeSuffix(relsXml, "/slideLayout");
       const layoutTarget = layoutRel?.getAttribute("Target") || undefined;
+      let layoutXml: Document | null = null;
       let layoutSpTree: Element | null = null;
       let layoutRelsXml: Document | null = null;
       if (layoutTarget) {
         const layoutPath = this.resolvePath(layoutTarget, "ppt/slides");
         const layoutXmlStr = await this.zip.file(layoutPath)?.async("string");
         if (layoutXmlStr) {
-          const layoutXml = XmlHelper.parseXml(layoutXmlStr);
+          layoutXml = XmlHelper.parseXml(layoutXmlStr);
           layoutSpTree = layoutXml.querySelector("p\\:spTree") || layoutXml.getElementsByTagNameNS("*", "spTree")[0] || null;
           const layoutRelsPath = layoutPath.replace("slideLayouts/", "slideLayouts/_rels/") + ".rels";
           layoutRelsXml = this.zip.file(layoutRelsPath)
@@ -85,6 +87,7 @@ export class SlideExtractor {
 
       // Resolve master from layout rels
       let masterSpTree: Element | null = null;
+      let masterDoc: Document | null = null;
       let masterRelsXml: Document | null = null;
       if (layoutRelsXml) {
         const masterRel = XmlHelper.findRelationshipByTypeSuffix(layoutRelsXml, "/slideMaster");
@@ -93,8 +96,8 @@ export class SlideExtractor {
           const masterPath = this.resolvePath(masterTarget, "ppt/slideLayouts");
           const masterXmlStr = await this.zip.file(masterPath)?.async("string");
           if (masterXmlStr) {
-            const masterXml = XmlHelper.parseXml(masterXmlStr);
-            masterSpTree = masterXml.querySelector("p\\:spTree") || masterXml.getElementsByTagNameNS("*", "spTree")[0] || null;
+            masterDoc = XmlHelper.parseXml(masterXmlStr);
+            masterSpTree = masterDoc.querySelector("p\\:spTree") || masterDoc.getElementsByTagNameNS("*", "spTree")[0] || null;
             const masterRelsPath = masterPath.replace("slideMasters/", "slideMasters/_rels/") + ".rels";
             masterRelsXml = this.zip.file(masterRelsPath)
               ? XmlHelper.parseXml(await this.zip.file(masterRelsPath)!.async("string"))
@@ -109,18 +112,37 @@ export class SlideExtractor {
       const masterBg = masterRelsXml ? await this.extractBackground(masterSpTree?.ownerDocument || null, masterRelsXml, "ppt/slideMasters", this.zip, themeColors, themeXml, themeRelsXml) : null;
       const bgElement = slideBg || layoutBg || masterBg;
 
-      // Extract elements from master → layout → slide (respecting z-order: back to front)
-      const masterText = masterSpTree ? TextExtractor.extract(masterSpTree, themeColors, { context: "master" }) : [];
-      const masterImages = masterSpTree && masterRelsXml
-        ? await ImageExtractor.extract(masterSpTree, masterRelsXml, this.zip, "ppt/slideMasters", this.options, themeContext)
-        : [];
-      const masterShapes = masterSpTree ? ShapeExtractor.extract(masterSpTree, themeColors, themeXml) : [];
+      // showMasterSp="0" on slide or layout → hide slide master shapes (Hide Background Graphics)
+      const showMasterShapes = XmlHelper.shouldShowMasterShapes(slideXml, layoutXml);
 
-      const layoutText = layoutSpTree ? TextExtractor.extract(layoutSpTree, themeColors, { context: "layout" }) : [];
-      const layoutImages = layoutSpTree && layoutRelsXml
-        ? await ImageExtractor.extract(layoutSpTree, layoutRelsXml, this.zip, "ppt/slideLayouts", this.options, themeContext)
+      // Extract elements from master → layout → slide in spTree document order (z-order)
+      const orderedCtxBase = {
+        themeColors,
+        themeDoc: themeXml,
+        zip: this.zip,
+        options: this.options,
+        themeContext,
+        themeTableStyles,
+      };
+
+      const masterContent =
+        showMasterShapes && masterSpTree && masterRelsXml
+          ? await extractOrderedSpTree(masterSpTree, {
+              ...orderedCtxBase,
+              rels: masterRelsXml,
+              basePath: "ppt/slideMasters",
+              textOpts: { context: "master" },
+            })
+          : [];
+
+      const layoutContent = layoutSpTree && layoutRelsXml
+        ? await extractOrderedSpTree(layoutSpTree, {
+            ...orderedCtxBase,
+            rels: layoutRelsXml,
+            basePath: "ppt/slideLayouts",
+            textOpts: { context: "layout" },
+          })
         : [];
-      const layoutShapes = layoutSpTree ? ShapeExtractor.extract(layoutSpTree, themeColors, themeXml) : [];
 
       const masterDefaults = this.extractPlaceholderDefaults(masterSpTree, themeColors);
       const layoutDefaults = this.extractPlaceholderDefaults(layoutSpTree, themeColors);
@@ -132,30 +154,36 @@ export class SlideExtractor {
           for (const [k, v] of Object.entries(layoutVal)) {
             if (v !== undefined) (merged as any)[k] = v;
           }
+          if (layoutVal.align == null && existing.align != null) {
+            merged.align = existing.align;
+          }
           mergedDefaults.set(key, merged);
         } else {
           mergedDefaults.set(key, layoutVal);
         }
       }
-      const slideText = TextExtractor.extract(spTree, themeColors, { context: "slide", placeholderDefaults: mergedDefaults });
-      const slideImages = await ImageExtractor.extract(spTree, relsXml, this.zip, "ppt/slides", this.options, themeContext);
-      const slideTables = TableExtractor.extract(spTree, themeColors, themeTableStyles);
-      const slideCharts = await ChartExtractor.extract(spTree, relsXml, this.zip, themeColors);
-      const slideShapes = ShapeExtractor.extract(spTree, themeColors, themeXml);
+      const masterTextStyles = TextExtractor.extractMasterTextStyles(masterDoc, themeColors);
+      const slideContent = await extractOrderedSpTree(spTree, {
+        ...orderedCtxBase,
+        rels: relsXml,
+        basePath: "ppt/slides",
+        textOpts: {
+          context: "slide",
+          placeholderDefaults: mergedDefaults,
+          masterTextStyles,
+        },
+      });
+
+      const { shapes: slideShapes, images: slideImages } = partitionSlideElements(slideContent);
+      const consumedFrameShapes = attachBackingShapeFrames(slideShapes, slideImages);
 
       slides.push([
         ...(bgElement ? [bgElement] : []),
-        ...masterShapes,
-        ...masterImages,
-        ...masterText,
-        ...layoutShapes,
-        ...layoutImages,
-        ...layoutText,
-        ...slideShapes,
-        ...slideTables,
-        ...slideCharts,
-        ...slideImages,
-        ...slideText,
+        ...masterContent,
+        ...layoutContent,
+        ...slideContent.filter(
+          (el) => el.type !== "shape" || !consumedFrameShapes.has(el as ShapeElement),
+        ),
       ]);
     }
 
@@ -176,7 +204,10 @@ export class SlideExtractor {
     return resolved.join("/");
   }
 
-  private extractPlaceholderDefaults(spTree: Element | null, themeColors: Record<string, string>): Map<string, PlaceholderDefaults> {
+  private extractPlaceholderDefaults(
+    spTree: Element | null,
+    themeColors: Record<string, string>,
+  ): Map<string, PlaceholderDefaults> {
     const map = new Map<string, PlaceholderDefaults>();
     if (!spTree) return map;
     const shapes = spTree.getElementsByTagNameNS("*", "sp");
@@ -205,6 +236,8 @@ export class SlideExtractor {
       if (bodyPr) {
         const anchor = bodyPr.getAttribute("anchor");
         if (anchor) defaults.anchor = anchor;
+        const vert = bodyPr.getAttribute("vert");
+        if (vert) defaults.vert = vert;
         const lI = bodyPr.getAttribute("lIns"); if (lI) defaults.lIns = lI;
         const tI = bodyPr.getAttribute("tIns"); if (tI) defaults.tIns = tI;
         const rI = bodyPr.getAttribute("rIns"); if (rI) defaults.rIns = rI;
@@ -231,6 +264,10 @@ export class SlideExtractor {
           if (fontFamily) defaults.fontFamily = fontFamily;
         }
       }
+
+      if (type) defaults.placeholderType = type;
+      const listLevels = parseListLevelDefaults(lstStyle ?? null, themeColors);
+      if (Object.keys(listLevels).length > 0) defaults.listLevels = listLevels;
 
       if (type) map.set(`type:${type}`, defaults);
       if (idx) map.set(`idx:${idx}`, defaults);
@@ -314,9 +351,9 @@ export class SlideExtractor {
     const blip = blipFill?.getElementsByTagNameNS("*", "blip")[0] || null;
     if (!blip || !rels) return null;
 
-    const imageSrc = await ImageExtractor.resolveBlip(blip, rels, zip, baseDir, this.options);
-    if (!imageSrc) return null;
+    const resolved = await ImageExtractor.resolveBlip(blip, rels, zip, baseDir, this.options);
+    if (!resolved) return null;
 
-    return { type: "background", imageSrc } as SlideElement;
+    return { type: "background", imageSrc: resolved.src } as SlideElement;
   }
 }

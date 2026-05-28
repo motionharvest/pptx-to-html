@@ -1,4 +1,5 @@
 import { TableElement } from "../models/SlideElement";
+import { TEXT_DIRECTION_CENTER_WRAPPER, textDirectionInnerStyles } from "../core/textDirection";
 
 export function renderTableElement(el: TableElement): string {
   const nf = (n: number, fb = 0) => (Number.isFinite(n) ? n : fb);
@@ -13,12 +14,21 @@ export function renderTableElement(el: TableElement): string {
     .map((w) => `<col style="width:${(w / colTotal) * 100}%">`)
     .join("");
 
+  const rowHeightsPx = el.rows.map((row) =>
+    row.height && Number.isFinite(row.height) ? row.height / 9525 : undefined,
+  );
+  const hasExplicitRowHeights =
+    rowHeightsPx.length > 0 && rowHeightsPx.every((h) => h !== undefined);
+
   // Determine table-level background: prefer explicit table fill, then wholeTbl from style
   const tableBg = el.tableFillColor || el.style?.fills?.wholeTbl;
 
   let rowIndex = 0;
   const rowsHtml = el.rows
-    .map((row) => {
+    .map((row, i) => {
+      const rowHPx = rowHeightsPx[i];
+      const rowHeightCss =
+        rowHPx !== undefined ? `height:${rowHPx}px;max-height:${rowHPx}px;` : "";
       let colIndex = 0;
       const tds = row.cells
         .map((cell) => {
@@ -40,23 +50,32 @@ export function renderTableElement(el: TableElement): string {
             ${cell.font?.size ? `font-size:${cell.font.size}pt;` : ""}
             ${borderCss}
             ${isHeaderCol ? "font-weight:600;" : ""}
-            overflow:hidden; word-break: break-word; white-space: pre-wrap;`;
+            box-sizing:border-box; overflow:hidden; word-break: break-word; white-space: pre-wrap;`;
           const span = `${cell.colSpan ? ` colspan=\"${cell.colSpan}\"` : ""}${cell.rowSpan ? ` rowspan=\"${cell.rowSpan}\"` : ""}`;
-          const content = escape(cell.text).replace(/\n/g, "<br>");
+          let content = escape(cell.text).replace(/\n/g, "<br>");
+          if (cell.textDirection) {
+            const dirStyles = textDirectionInnerStyles(cell.textDirection).join(";");
+            content = `<div style="${TEXT_DIRECTION_CENTER_WRAPPER}"><div style="${dirStyles}">${content}</div></div>`;
+          }
           const html = `<td${span} style="${style}">${content}</td>`;
           colIndex += cell.colSpan || 1;
           return html;
         })
         .join("");
-      const rowStyle = el.tableStyle?.firstRow && rowIndex === 0 ? ' style="font-weight:600;"' : "";
-      const trHtml = `<tr${rowStyle}>${tds}</tr>`;
+      const trStyleParts: string[] = [];
+      if (rowHeightCss) trStyleParts.push(rowHeightCss);
+      if (el.tableStyle?.firstRow && rowIndex === 0) trStyleParts.push("font-weight:600;");
+      const trStyle = trStyleParts.length ? ` style="${trStyleParts.join("")}"` : "";
+      const trHtml = `<tr${trStyle}>${tds}</tr>`;
       rowIndex += 1;
       return trHtml;
     })
     .join("");
 
+  const tableHeightCss = hasExplicitRowHeights ? `height:${height}px;` : "height:100%;";
+
   return `<div style="position:absolute; left:${x}px; top:${y}px; width:${width}px; height:${height}px;">
-    <table style="border-collapse:collapse; width:100%; height:100%; table-layout:fixed;${tableBg ? ` background-color:${tableBg};` : ""}">
+    <table style="border-collapse:collapse; width:100%; ${tableHeightCss} table-layout:fixed;${tableBg ? ` background-color:${tableBg};` : ""}">
       <colgroup>${cols}</colgroup>
       <tbody>${rowsHtml}</tbody>
     </table>

@@ -1,12 +1,20 @@
-import { ImageElement } from "../models/SlideElement";
+import { ImageElement, ImageCrop, ShapeFrameStyle } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
 import { parseCustGeom } from "../core/custGeom";
+import { readImageDimensions } from "../core/imageDimensions";
+import { extractShapeStyle, hasVisibleShapeFrame, readRoundRectAdj } from "../core/shapeStyle";
 import JSZip from "jszip";
+
+export interface ResolvedBlip {
+  src: string;
+  naturalSize?: { width: number; height: number };
+}
 
 export interface ThemeImageContext {
   themeDoc: Document | null;
   themeRels: Document | null;
   themeBasePath?: string;
+  themeColors?: Record<string, string>;
 }
 
 /**
@@ -34,7 +42,7 @@ export class ImageExtractor {
 
     const pics = spTree.getElementsByTagNameNS("*", "pic");
     for (const pic of Array.from(pics)) {
-      const el = await this.extractFromPic(pic, rels, zip, basePath, options);
+      const el = await this.extractFromPic(pic, rels, zip, basePath, options, themeContext);
       if (el) elements.push(el);
     }
 
@@ -47,38 +55,56 @@ export class ImageExtractor {
     return elements;
   }
 
-  private static async extractFromPic(
+  static async extractFromPic(
     pic: Element,
     rels: Document,
     zip: JSZip,
     basePath: string,
-    options: { imageSource?: "data-uri" | "zip-path" }
+    options: { imageSource?: "data-uri" | "zip-path" },
+    themeContext?: ThemeImageContext,
   ): Promise<ImageElement | null> {
     const blipFill = pic.getElementsByTagNameNS("*", "blipFill")[0];
     const blip = blipFill?.getElementsByTagNameNS("*", "blip")[0]
       ?? pic.getElementsByTagNameNS("*", "blip")[0];
     if (!blip) return null;
 
-    const src = await this.resolveBlip(blip, rels, zip, basePath, options);
-    if (!src) return null;
+    const resolved = await this.resolveBlip(blip, rels, zip, basePath, options);
+    if (!resolved) return null;
 
     const xfrm = pic.getElementsByTagNameNS("*", "xfrm")[0];
-    const { x, y, cx, cy } = this.readTransform(xfrm);
+    const { x, y, cx, cy, rotationDeg, flipH, flipV } = this.readTransform(xfrm);
     const embedId = blip.getAttribute("r:embed") ?? blip.getAttribute("r:link") ?? "";
     const spPr = pic.getElementsByTagNameNS("*", "spPr")[0];
     const customGeometry = parseCustGeom(spPr ?? null) ?? undefined;
+    const { crop, fill, preserveAspectRatio, imageOpacity } = this.parseBlipFill(blipFill, pic);
+    const frame = this.extractFrameFromSpPr(
+      pic,
+      spPr,
+      { x, y, width: cx, height: cy },
+      themeContext,
+      false,
+    );
 
     return {
       type: "image",
       relId: embedId,
-      src,
+      src: resolved.src,
       position: { x, y },
       size: { width: cx, height: cy },
+      rotationDeg,
+      crop,
+      fill,
+      naturalSize: resolved.naturalSize,
+      preserveAspectRatio,
+      frame,
       customGeometry,
+      imageOpacity,
+      flipH,
+      flipV,
     };
   }
 
-  private static async extractFromShape(
+  static async extractFromShape(
     shape: Element,
     rels: Document,
     zip: JSZip,
@@ -110,22 +136,38 @@ export class ImageExtractor {
     const blip = blipFill.getElementsByTagNameNS("*", "blip")[0];
     if (!blip) return null;
 
-    const src = await this.resolveBlip(blip, blipRels, zip, blipBase, options);
-    if (!src) return null;
+    const resolved = await this.resolveBlip(blip, blipRels, zip, blipBase, options);
+    if (!resolved) return null;
 
     const xfrm = shape.getElementsByTagNameNS("*", "xfrm")[0];
-    const { x, y, cx, cy } = this.readTransform(xfrm);
+    const { x, y, cx, cy, rotationDeg, flipH, flipV } = this.readTransform(xfrm);
     const embedId = blip.getAttribute("r:embed") ?? blip.getAttribute("r:link") ?? "";
-
     const customGeometry = parseCustGeom(spPr ?? null) ?? undefined;
+    const { crop, fill, preserveAspectRatio, imageOpacity } = this.parseBlipFill(blipFill);
+    const frame = this.extractFrameFromSpPr(
+      shape,
+      spPr,
+      { x, y, width: cx, height: cy },
+      themeContext,
+      true,
+    );
 
     return {
       type: "image",
       relId: embedId,
-      src,
+      src: resolved.src,
       position: { x, y },
       size: { width: cx, height: cy },
+      rotationDeg,
+      crop,
+      fill,
+      naturalSize: resolved.naturalSize,
+      preserveAspectRatio,
+      frame,
       customGeometry,
+      imageOpacity,
+      flipH,
+      flipV,
     };
   }
 
@@ -135,7 +177,7 @@ export class ImageExtractor {
     zip: JSZip,
     basePath: string,
     options: { imageSource?: "data-uri" | "zip-path" } = {}
-  ): Promise<string | null> {
+  ): Promise<ResolvedBlip | null> {
     if (!rels) return null;
 
     const embedId = blip.getAttribute("r:embed") ?? blip.getAttribute("r:link") ?? "";
@@ -179,19 +221,90 @@ export class ImageExtractor {
 
     if (!imageFile) return null;
 
-    return options.imageSource === "zip-path"
+    const bytes = await imageFile.async("uint8array");
+    const naturalSize = readImageDimensions(bytes);
+    const src = options.imageSource === "zip-path"
       ? normalizedPath
-      : await this.toDataUri(imageFile, normalizedPath);
+      : `data:image/${normalizedPath.split(".").pop()?.toLowerCase() || "png"};base64,${bytesToBase64(bytes)}`;
+
+    return { src, naturalSize };
   }
 
-  private static readTransform(xfrm: Element | null | undefined): { x: number; y: number; cx: number; cy: number } {
+  private static extractFrameFromSpPr(
+    owner: Element,
+    spPr: Element | null | undefined,
+    bounds: { x: number; y: number; width: number; height: number },
+    themeContext: ThemeImageContext | undefined,
+    pictureFill: boolean,
+  ): ShapeFrameStyle | undefined {
+    const themeColors = themeContext?.themeColors ?? {};
+    const style = extractShapeStyle(owner, spPr, themeColors, themeContext?.themeDoc ?? null, {
+      pictureFill,
+    });
+    if (!hasVisibleShapeFrame(style)) return undefined;
+
+    return {
+      shapeType: style.shapeType,
+      fillColor: style.fillColor,
+      borderColor: style.borderColor,
+      strokeWidth: style.strokeWidth,
+      position: { x: bounds.x, y: bounds.y },
+      size: { width: bounds.width, height: bounds.height },
+      shadow: style.shadow,
+      clipImage: style.shapeType === "ellipse" || style.shapeType === "roundRect",
+      roundRectAdj: style.shapeType === "roundRect" ? readRoundRectAdj(spPr) : undefined,
+    };
+  }
+
+  private static parseBlipFill(
+    blipFill: Element | null | undefined,
+    pic?: Element,
+  ): { crop?: ImageCrop; fill?: ImageCrop; preserveAspectRatio?: boolean; imageOpacity?: number } {
+    const blip = blipFill?.getElementsByTagNameNS("*", "blip")[0];
+    const alphaModFix = blip?.getElementsByTagNameNS("*", "alphaModFix")[0];
+    const alphaAmt = alphaModFix ? Number(alphaModFix.getAttribute("amt") ?? 100000) : undefined;
+    const imageOpacity = alphaAmt !== undefined && Number.isFinite(alphaAmt) ? alphaAmt / 100000 : undefined;
+
+    const crop = this.parseRelativeRect(blipFill?.getElementsByTagNameNS("*", "srcRect")[0]);
+    const stretchEl = blipFill?.getElementsByTagNameNS("*", "stretch")[0];
+    const fill = stretchEl
+      ? this.parseRelativeRect(stretchEl.getElementsByTagNameNS("*", "fillRect")[0]) ?? { left: 0, top: 0, right: 0, bottom: 0 }
+      : undefined;
+
+    const picLocks = pic?.getElementsByTagNameNS("*", "picLocks")[0]
+      ?? pic?.querySelector("*|cNvPicPr *|picLocks");
+    const preserveAspectRatio = picLocks?.getAttribute("noChangeAspect") === "1" ? true : undefined;
+
+    return { crop, fill, preserveAspectRatio, imageOpacity };
+  }
+
+  /** Parse a:srcRect / a:fillRect insets (percent * 1000 → fraction). */
+  private static parseRelativeRect(rect: Element | null | undefined): ImageCrop | undefined {
+    if (!rect) return undefined;
+
+    const left = Number(rect.getAttribute("l") || 0) / 100000;
+    const top = Number(rect.getAttribute("t") || 0) / 100000;
+    const right = Number(rect.getAttribute("r") || 0) / 100000;
+    const bottom = Number(rect.getAttribute("b") || 0) / 100000;
+    if (left === 0 && top === 0 && right === 0 && bottom === 0) return undefined;
+    return { left, top, right, bottom };
+  }
+
+  private static readTransform(
+    xfrm: Element | null | undefined
+  ): { x: number; y: number; cx: number; cy: number; rotationDeg?: number; flipH?: boolean; flipV?: boolean } {
     const off = xfrm?.getElementsByTagNameNS("*", "off")[0];
     const ext = xfrm?.getElementsByTagNameNS("*", "ext")[0];
+    const rotAttr = xfrm?.getAttribute("rot");
+    const rotationDeg = rotAttr ? Number(rotAttr) / 60000 : undefined;
     return {
       x: off ? XmlHelper.getAttrAsNumber(off, "x") : 0,
       y: off ? XmlHelper.getAttrAsNumber(off, "y") : 0,
       cx: ext ? XmlHelper.getAttrAsNumber(ext, "cx") : 1000000,
       cy: ext ? XmlHelper.getAttrAsNumber(ext, "cy") : 500000,
+      rotationDeg: rotationDeg && !isNaN(rotationDeg) ? rotationDeg : undefined,
+      flipH: xfrm?.getAttribute("flipH") === "1" || undefined,
+      flipV: xfrm?.getAttribute("flipV") === "1" || undefined,
     };
   }
 
@@ -210,10 +323,13 @@ export class ImageExtractor {
     }
     return resolved.join("/");
   }
+}
 
-  private static async toDataUri(imageFile: JSZip.JSZipObject, normalizedPath: string): Promise<string> {
-    const binary = await imageFile.async("base64");
-    const extImg = normalizedPath.split(".").pop()?.toLowerCase() || "png";
-    return `data:image/${extImg};base64,${binary}`;
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64");
   }
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return btoa(binary);
 }

@@ -25,6 +25,7 @@ const html = (await pptxToHtml(buf.buffer.slice(buf.byteOffset, buf.byteOffset +
 
 const checks = {
   hasBlueSvg: html.includes('fill="#006FCF"'),
+  hasBlueTitleText: /font-size:\s*53[^;]*;[\s\S]*color:\s*#006FCF/.test(html) && html.includes("American Express"),
   noBlueRect: !html.includes("background-color: #006FCF"),
   noGrayMasterWave: !html.includes('fill="#D9D9D6"'),
   hasSvg: html.includes("<svg"),

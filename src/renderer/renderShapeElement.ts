@@ -1,6 +1,9 @@
 import { ShapeElement } from "../models/SlideElement";
 import { getSvgPathForShape } from "./shapePathMap";
 import { emuToPx, renderCustGeomSvg } from "./renderCustGeom";
+import { buildMarkerDefs, dashStyleToSvgAttr } from "../core/lineStyle";
+import { shadowCasterFill, shadowToSvgFilterDef } from "../core/shadowEffect";
+import { roundRectCornerRadiusPx } from "../core/shapeStyle";
 
 /**
  * Renders a shape element as an absolutely positioned HTML or SVG element.
@@ -25,43 +28,31 @@ export function renderShapeElement(el: ShapeElement, options: { scaleStrokes?: b
         stroke: el.borderColor,
         strokeWidthPx: el.strokeWidth,
         rotationDeg: el.rotationDeg && !isNaN(el.rotationDeg) ? el.rotationDeg : undefined,
+        dashStyle: el.dashStyle,
+        headEnd: el.headEnd,
+        tailEnd: el.tailEnd,
+        scaleStrokes: options.scaleStrokes,
       });
     }
 
     const rotation = el.rotationDeg && !isNaN(el.rotationDeg) ? el.rotationDeg : 0;
-    const rotationStyle = rotation ? `transform: rotate(${rotation}deg); transform-origin: center;` : "";
 
-    const style = `
-    position: absolute;
-    left: ${x}px;
-    top: ${y}px;
-    width: ${width}px;
-    height: ${height}px;
-    ${rotationStyle}
-  `;
-
-    // Basic HTML shapes
-    if (el.shapeType === "rect") {
-        return `<div style="${style}
-      background-color: ${el.fillColor};
-      border: 1px solid ${el.borderColor ?? "transparent"};
-      box-sizing: border-box;"></div>`;
-    }
-
-    if (el.shapeType === "ellipse") {
-        return `<div style="${style}
-      background-color: ${el.fillColor};
-      border: 1px solid ${el.borderColor ?? "transparent"};
-      border-radius: 50%;
-      box-sizing: border-box;"></div>`;
-    }
-
-    if (el.shapeType === "roundRect") {
-        return `<div style="${style}
-      background-color: ${el.fillColor};
-      border: 1px solid ${el.borderColor ?? "transparent"};
-      border-radius: 16px;
-      box-sizing: border-box;"></div>`;
+    // Basic preset shapes — SVG stroke is centered on the path (matches PowerPoint outline).
+    if (el.shapeType === "rect" || el.shapeType === "ellipse" || el.shapeType === "roundRect") {
+        return renderPresetShapeSvg(
+          el.shapeType,
+          x,
+          y,
+          width,
+          height,
+          el.fillColor,
+          el.borderColor,
+          el.strokeWidth,
+          rotation,
+          el.dashStyle,
+          el.shadow,
+          el.roundRectAdj,
+        );
     }
 
     // SVG-based shapes using prefixed definition
@@ -78,8 +69,62 @@ export function renderShapeElement(el: ShapeElement, options: { scaleStrokes?: b
       rotation,
       el.headEnd,
       el.tailEnd,
-      options.scaleStrokes === true
+      options.scaleStrokes === true,
+      el.dashStyle
     );
+}
+
+/** Render rect/ellipse/roundRect with stroke centered on the geometry edge (DrawingML default). */
+function renderPresetShapeSvg(
+  shapeType: "rect" | "ellipse" | "roundRect",
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fill: string,
+  stroke: string | undefined,
+  strokeWidthPx: number | undefined,
+  rotationDeg: number,
+  dashStyle?: ShapeElement["dashStyle"],
+  shadow?: ShapeElement["shadow"],
+  roundRectAdj?: number,
+): string {
+  const sw = strokeWidthPx && strokeWidthPx > 0 ? strokeWidthPx : 0;
+  const strokeColor = stroke && stroke !== "transparent" ? stroke : "none";
+  const fillColor = fill && fill !== "transparent" ? fill : "none";
+  const renderFill = shadow ? shadowCasterFill(fillColor) : fillColor;
+  const dashAttr = dashStyleToSvgAttr(dashStyle);
+  const rotationStyle = rotationDeg
+    ? `transform: rotate(${rotationDeg}deg); transform-origin: center;`
+    : "";
+  const filterId = shadow ? `sh-${Math.random().toString(36).slice(2, 10)}` : "";
+  const filterDef = shadow ? shadowToSvgFilterDef(shadow, filterId) : "";
+  const filterAttr = shadow ? `filter="url(#${filterId})"` : "";
+
+  let markup = "";
+  if (shapeType === "ellipse") {
+    const cx = width / 2;
+    const cy = height / 2;
+    markup = `<ellipse cx="${cx}" cy="${cy}" rx="${cx}" ry="${cy}" fill="${renderFill}" stroke="${strokeColor}" stroke-width="${sw}" ${dashAttr} ${filterAttr} />`;
+  } else if (shapeType === "roundRect") {
+    const rx = roundRectCornerRadiusPx(width, height, roundRectAdj);
+    markup = `<rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="${renderFill}" stroke="${strokeColor}" stroke-width="${sw}" ${dashAttr} ${filterAttr} />`;
+  } else {
+    markup = `<rect x="0" y="0" width="${width}" height="${height}" fill="${renderFill}" stroke="${strokeColor}" stroke-width="${sw}" ${dashAttr} ${filterAttr} />`;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" style="
+    position: absolute;
+    left: ${x}px;
+    top: ${y}px;
+    width: ${width}px;
+    height: ${height}px;
+    overflow: visible;
+    ${rotationStyle}
+  " viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    ${filterDef ? `<defs>${filterDef}</defs>` : ""}
+    ${markup}
+  </svg>`;
 }
 
 function shapeSvg(
@@ -94,9 +139,10 @@ function shapeSvg(
   rotationDeg?: number,
   headEnd?: { type?: string; w?: string; len?: string },
   tailEnd?: { type?: string; w?: string; len?: string },
-  scaleStrokes?: boolean
+  scaleStrokes?: boolean,
+  dashStyle?: ShapeElement["dashStyle"]
 ): string {
-  const strokeColorOpt = resolveStrokeColor(stroke, fill);
+  const strokeColor = resolveStrokeColor(stroke, fill) || "#000";
   const [typeRaw, ...rest] = raw.trim().split(/\s+/);
   const type = typeRaw.toUpperCase().replace("_ARROW", "");
   const isArrow = typeRaw.endsWith("_ARROW");
@@ -105,6 +151,8 @@ function shapeSvg(
   const svgHeight = height;
   const svgWidth = width;
   const sw = strokeWidthPx && strokeWidthPx > 0 ? strokeWidthPx : 2;
+  const dashAttr = dashStyleToSvgAttr(dashStyle);
+  const vectorEffect = scaleStrokes ? "" : "vector-effect=\"non-scaling-stroke\"";
 
   const rotationStyle = rotationDeg ? `transform: rotate(${rotationDeg}deg); transform-origin: center;` : "";
   const commonStyle = `
@@ -118,12 +166,12 @@ function shapeSvg(
 
   switch (type) {
     case "PATH": {
-      const defs = buildMarkerDefs(headEnd, tailEnd, strokeColorOpt || "#000");
-      const markerStartAttr = defs.startId ? `marker-start=\"url(#${defs.startId})\"` : "";
-      const markerEndAttr = defs.endId ? `marker-end=\"url(#${defs.endId})\"` : "";
+      const defs = buildMarkerDefs(headEnd, tailEnd, strokeColor);
+      const markerStartAttr = defs.startId ? `marker-start="url(#${defs.startId})"` : "";
+      const markerEndAttr = defs.endId ? `marker-end="url(#${defs.endId})"` : "";
       return `<svg viewBox="0 0 100 100" style="${commonStyle}" overflow="visible">
         ${defs.defs}
-        <path d="${data}" fill="none" stroke="${strokeColorOpt || "#000"}" stroke-width="${sw}" ${scaleStrokes ? "" : "vector-effect=\"non-scaling-stroke\""} ${markerStartAttr} ${markerEndAttr} />
+        <path d="${data}" fill="none" stroke="${strokeColor}" stroke-width="${sw}" ${vectorEffect} ${dashAttr} ${markerStartAttr} ${markerEndAttr} />
       </svg>`;
     }
 
@@ -141,21 +189,17 @@ function shapeSvg(
         return "";
       }
 
-      // "x1,y1 x2,y2 x3,y3 ..."
-      const pointPairs: string[] = [];
-      for (let i = 0; i < coords.length; i += 2) {
-        pointPairs.push(`${coords[i]},${coords[i + 1]}`);
-      }
-
-      // Dimensiones mínimas para que el trazo no se pierda
       const effectiveWidth = width > 0 ? width : Math.max(sw * 2, 2);
       const effectiveHeight = height > 0 ? height : Math.max(sw * 2, 2);
 
-      const defs = buildMarkerDefs(headEnd, tailEnd ?? (isArrow ? { type: "triangle", w: "med", len: "med" } : undefined), strokeColorOpt || "#000");
-      const markerStartAttr = defs.startId ? `marker-start=\"url(#${defs.startId})\"` : "";
-      const markerEndAttr = defs.endId ? `marker-end=\"url(#${defs.endId})\"` : "";
+      const defs = buildMarkerDefs(
+        headEnd,
+        tailEnd ?? (isArrow ? { type: "triangle", w: "med", len: "med" } : undefined),
+        strokeColor
+      );
+      const markerStartAttr = defs.startId ? `marker-start="url(#${defs.startId})"` : "";
+      const markerEndAttr = defs.endId ? `marker-end="url(#${defs.endId})"` : "";
 
-      // Escalar puntos a píxeles directamente para evitar distorsión
       const scaledPairs: string[] = [];
       for (let i = 0; i < coords.length; i += 2) {
         const px = (coords[i] / 100) * effectiveWidth;
@@ -164,8 +208,7 @@ function shapeSvg(
       }
       const scaledPoints = scaledPairs.join(" ");
 
-      return `
-        <svg viewBox="0 0 ${effectiveWidth} ${effectiveHeight}"
+      return `<svg viewBox="0 0 ${effectiveWidth} ${effectiveHeight}"
             style="
               position: absolute;
               left: ${x}px;
@@ -178,9 +221,10 @@ function shapeSvg(
           ${defs.defs}
           <polyline points="${scaledPoints}"
                     fill="none"
-                    stroke="${strokeColorOpt || "#000"}"
+                    stroke="${strokeColor}"
                     stroke-width="${sw}"
-                    ${scaleStrokes ? "" : "vector-effect=\"non-scaling-stroke\""}
+                    ${vectorEffect}
+                    ${dashAttr}
                     ${markerStartAttr} ${markerEndAttr} />
         </svg>`;
     }
@@ -188,83 +232,13 @@ function shapeSvg(
     case "POLYGON":
     default:
       return `<svg viewBox="0 0 100 100" style="${commonStyle}">
-        <polygon points="${data}" fill="${fill}" stroke="${strokeColorOpt ?? "none"}" stroke-width="${sw}" ${scaleStrokes ? "" : "vector-effect=\"non-scaling-stroke\""} />
+        <polygon points="${data}" fill="${fill}" stroke="${strokeColor}" stroke-width="${sw}" ${vectorEffect} />
       </svg>`;
   }
 }
 
-function buildMarkerDefs(
-  headEnd: { type?: string; w?: string; len?: string } | undefined,
-  tailEnd: { type?: string; w?: string; len?: string } | undefined,
-  color: string
-): { defs: string; startId?: string; endId?: string } {
-  const parts: string[] = [];
-  let startId: string | undefined;
-  let endId: string | undefined;
-
-  if (headEnd && headEnd.type && headEnd.type !== "none") {
-    startId = `mstart-${Math.random().toString(36).slice(2, 8)}`;
-    parts.push(markerDef(startId, headEnd, color));
-  }
-  if (tailEnd && tailEnd.type && tailEnd.type !== "none") {
-    endId = `mend-${Math.random().toString(36).slice(2, 8)}`;
-    parts.push(markerDef(endId, tailEnd, color));
-  }
-
-  return { defs: parts.length ? `<defs>${parts.join("\n")}</defs>` : "", startId, endId };
-}
-
-function markerDef(id: string, spec: { type?: string; w?: string; len?: string }, color: string): string {
-  const sizeFactor = mapLen(spec.len);
-  const base = 4 * sizeFactor; // base marker box size
-  const refX = base; // tip at end
-  const refY = base / 2;
-
-  switch ((spec.type || "triangle").toLowerCase()) {
-    case "diamond":
-      return `<marker id="${id}" markerUnits="strokeWidth" markerWidth="${base}" markerHeight="${base}"
-                      refX="${refX}" refY="${refY}" orient="auto-start-reverse">
-                <polygon points="${base/2},0 ${base},${base/2} ${base/2},${base} 0,${base/2}" fill="${color}" />
-              </marker>`;
-    case "oval":
-      return `<marker id="${id}" markerUnits="strokeWidth" markerWidth="${base}" markerHeight="${base}"
-                      refX="${refX}" refY="${refY}" orient="auto-start-reverse">
-                <circle cx="${base/2}" cy="${base/2}" r="${base/2}" fill="${color}" />
-              </marker>`;
-    case "stealth":
-      return `<marker id="${id}" markerUnits="strokeWidth" markerWidth="${base}" markerHeight="${base}"
-                      refX="${refX}" refY="${refY}" orient="auto-start-reverse">
-                <polygon points="${base},${base/2} 0,0 0,${base}" fill="${color}" />
-              </marker>`;
-    case "arrow":
-    case "triangle":
-    default:
-      return `<marker id="${id}" markerUnits="strokeWidth" markerWidth="${base}" markerHeight="${base}"
-                      refX="${refX}" refY="${refY}" orient="auto-start-reverse">
-                <polygon points="0,0 ${base},${base/2} 0,${base}" fill="${color}" />
-              </marker>`;
-  }
-}
-
-function mapLen(len?: string): number {
-  switch ((len || "med").toLowerCase()) {
-    case "sm":
-    case "small":
-      return 1.5;
-    case "lg":
-    case "large":
-      return 2.5;
-    case "med":
-    case "medium":
-    default:
-      return 2;
-  }
-}
-
 function resolveStrokeColor(stroke?: string, fill?: string): string | undefined {
-  // Prefer explicit border color if present and not transparent
   if (stroke && stroke !== "transparent") return stroke;
-  // Fallback to fill if it's a solid color
   if (fill && fill !== "transparent") return fill;
   return undefined;
 }

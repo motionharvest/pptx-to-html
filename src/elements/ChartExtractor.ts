@@ -14,26 +14,40 @@ export class ChartExtractor {
     const charts: ChartElement[] = [];
     const gFrames = spTree.getElementsByTagNameNS("*", "graphicFrame");
     for (const gf of Array.from(gFrames)) {
+      const chart = await this.extractFromGraphicFrame(gf, relsXml, zip, themeColors);
+      if (chart) charts.push(chart);
+    }
+
+    return charts;
+  }
+
+  static async extractFromGraphicFrame(
+    gf: Element,
+    relsXml: Document,
+    zip: JSZip,
+    themeColors: Record<string, string>,
+    basePath = "ppt/slides",
+  ): Promise<ChartElement | null> {
       const graphicData = gf.getElementsByTagNameNS("*", "graphicData")[0] ?? null;
-      if (!graphicData) continue;
+      if (!graphicData) return null;
       const chartEl = graphicData.getElementsByTagNameNS("*", "chart")[0] ?? null;
-      if (!chartEl) continue;
+      if (!chartEl) return null;
 
       const rId = chartEl.getAttribute("r:id") || chartEl.getAttribute("r:embed") || undefined;
-      if (!rId) continue;
+      if (!rId) return null;
 
       const rel = XmlHelper.findRelationshipById(relsXml, rId);
       const target = rel?.getAttribute("Target") || undefined;
-      if (!target) continue;
+      if (!target) return null;
 
-      const fullPath = this.resolvePath(target, "ppt/slides");
+      const fullPath = this.resolvePath(target, basePath);
       const file = zip.file(fullPath);
-      if (!file) continue;
+      if (!file) return null;
       const xmlStr = await file.async("string");
       const doc = XmlHelper.parseXml(xmlStr);
 
       const parsed = this.parseChart(doc, themeColors);
-      if (!parsed) continue;
+      if (!parsed) return null;
 
       const xfrm = gf.getElementsByTagNameNS("*", "xfrm")[0] ?? null;
       const off = xfrm?.getElementsByTagNameNS("*", "off")[0] ?? null;
@@ -43,7 +57,7 @@ export class ChartExtractor {
       const cx = ext ? XmlHelper.getAttrAsNumber(ext, "cx") : 1000000;
       const cy = ext ? XmlHelper.getAttrAsNumber(ext, "cy") : 600000;
 
-      charts.push({
+      return {
         type: "chart",
         chartType: parsed.type,
         position: { x, y },
@@ -56,10 +70,7 @@ export class ChartExtractor {
         showDataLabels: parsed.showDataLabels,
         stackedMode: parsed.stackedMode,
         valueFormat: parsed.valueFormat,
-      });
-    }
-
-    return charts;
+      };
   }
 
   private static resolvePath(target: string, baseDir: string): string {

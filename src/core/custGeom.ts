@@ -112,10 +112,14 @@ export function parseCustGeom(spPr: Element | null): CustGeomData | null {
     const d = pathElementToSvgD(pathEl);
     if (!d) continue;
 
-    paths.push({
-      d,
-      fillMode: pathEl.getAttribute("fill") || "norm",
-    });
+    const fillAttr = pathEl.getAttribute("fill");
+    const isOpenPath = !Array.from(pathEl.children).some((c) => c.localName === "close");
+    const fillMode =
+      fillAttr === "none" || isOpenPath
+        ? "none"
+        : fillAttr || "norm";
+
+    paths.push({ d, fillMode });
   }
 
   if (!paths.length) return null;

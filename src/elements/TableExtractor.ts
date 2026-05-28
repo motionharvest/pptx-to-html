@@ -1,5 +1,6 @@
 import { TableElement, TableRow, TableCell } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
+import { parseTextDirection } from "../core/textDirection";
 
 /**
  * Extract tables from <spTree> by scanning p:graphicFrame with a:tbl content.
@@ -15,8 +16,20 @@ export class TableExtractor {
     const tables: TableElement[] = [];
     const gFrames = spTree.getElementsByTagNameNS("*", "graphicFrame");
     for (const gf of Array.from(gFrames)) {
+      const table = this.extractFromGraphicFrame(gf, themeColors, themeTableStyles);
+      if (table) tables.push(table);
+    }
+
+    return tables;
+  }
+
+  static extractFromGraphicFrame(
+    gf: Element,
+    themeColors: Record<string, string>,
+    themeTableStyles?: Record<string, { fills: Record<string, string>; fontColors: Record<string, string> }>,
+  ): TableElement | null {
       const tbl = this.findTbl(gf);
-      if (!tbl) continue;
+      if (!tbl) return null;
 
       const xfrm = gf.getElementsByTagNameNS("*", "xfrm")[0] ?? null;
       const off = xfrm?.getElementsByTagNameNS("*", "off")[0] ?? null;
@@ -53,6 +66,8 @@ export class TableExtractor {
 
       const rows: TableRow[] = [];
       for (const tr of Array.from(tbl.getElementsByTagNameNS("*", "tr"))) {
+        const rowHAttr = tr.getAttribute("h");
+        const rowHeight = rowHAttr ? Number(rowHAttr) : undefined;
         const cells: TableCell[] = [];
         for (const tc of Array.from(tr.getElementsByTagNameNS("*", "tc"))) {
           const txBody = tc.getElementsByTagNameNS("*", "txBody")[0] ?? null;
@@ -69,10 +84,10 @@ export class TableExtractor {
           if (rowSpan) cell.rowSpan = Number(rowSpan.getAttribute("val") || 1);
           cells.push(cell);
         }
-        rows.push({ cells });
+        rows.push({ cells, height: Number.isFinite(rowHeight) ? rowHeight : undefined });
       }
 
-      tables.push({
+      return {
         type: "table",
         position: { x, y },
         size: { width: cx, height: cy },
@@ -83,10 +98,7 @@ export class TableExtractor {
         tableStyleId: tableStyleId,
         tableFillColor,
         style: mergedStyle ? { fills: mergedStyle.fills, fontColors: mergedStyle.fontColors } : undefined,
-      });
-    }
-
-    return tables;
+      };
   }
 
   private static buildFallbackTableStyle(
@@ -215,6 +227,7 @@ export class TableExtractor {
       text: parts.join("").trim(),
       font: { name: fontName, size: fontSize, color: color },
       align: { horizontal: horiz, vertical },
+      textDirection: parseTextDirection(bodyPr),
       padding,
     };
   }

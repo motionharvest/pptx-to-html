@@ -1,5 +1,15 @@
 import { TextElement } from "../models/SlideElement";
 import { XmlHelper } from "../core/XmlHelper";
+import { textRunInlineStyles } from "../core/scriptTextStyle";
+import { parseTextDirection } from "../core/textDirection";
+import {
+  listBulletLayoutCss,
+  lstStyleDefinesLevels,
+  parseListLevelDefaults,
+  resolveParagraphListKind,
+  type ListLevelDefaults,
+} from "../core/listLevelDefaults";
+import { splitTextByUrls } from "../core/textUrls";
 
 export interface PlaceholderDefaults {
   x?: number;
@@ -7,6 +17,7 @@ export interface PlaceholderDefaults {
   cx?: number;
   cy?: number;
   anchor?: string;
+  vert?: string;
   lIns?: string;
   tIns?: string;
   rIns?: string;
@@ -17,6 +28,10 @@ export interface PlaceholderDefaults {
   italic?: boolean;
   color?: string;
   align?: string;
+  /** Placeholder type from layout/master (when slide ph omits type). */
+  placeholderType?: string;
+  /** Per-level list defaults from layout placeholder lstStyle. */
+  listLevels?: Record<number, ListLevelDefaults>;
 }
 
 interface TextRunDefaults {
@@ -27,11 +42,26 @@ interface TextRunDefaults {
   fontFamily?: string;
 }
 
+interface MasterStyleDefaults extends TextRunDefaults {
+  align?: string;
+  listLevels?: Record<number, ListLevelDefaults>;
+}
+
+export type MasterTextStyleKey = "title" | "body" | "other";
+export type MasterTextStyles = Partial<Record<MasterTextStyleKey, MasterStyleDefaults>>;
+
+const PLACEHOLDER_TYPE_ALIASES: Record<string, string[]> = {
+  ctrTitle: ["title"],
+  title: ["ctrTitle"],
+};
+
 interface ParsedRun {
   text: string;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  superscript?: boolean;
+  subscript?: boolean;
   color?: string;
   fontSize?: number;
   fontFamily?: string;
@@ -46,28 +76,42 @@ interface ParsedParagraph {
   listStyle?: string;
   spaceBefore?: number;
   spaceAfter?: number;
+  lineHeight?: number;
+  lineHeightPt?: number;
   bulletColor?: string;
   marginLeft?: number;
   indent?: number;
 }
 
 export class TextExtractor {
-  static extract(spTree: Element | null, themeColors: Record<string, string>, opts: { context?: "slide" | "layout" | "master"; placeholderDefaults?: Map<string, PlaceholderDefaults>; preserveTextStructure?: boolean } = {}): TextElement[] {
+  static extract(spTree: Element | null, themeColors: Record<string, string>, opts: { context?: "slide" | "layout" | "master"; placeholderDefaults?: Map<string, PlaceholderDefaults>; masterTextStyles?: MasterTextStyles; preserveTextStructure?: boolean } = {}): TextElement[] {
     if (!spTree) return [];
     const elements: TextElement[] = [];
     const shapes = spTree.getElementsByTagNameNS("*", "sp");
     for (const shape of Array.from(shapes)) {
+      const el = this.extractFromSp(shape, themeColors, opts);
+      if (el) elements.push(el);
+    }
+    return elements;
+  }
+
+  static extractFromSp(
+    shape: Element,
+    themeColors: Record<string, string>,
+    opts: { context?: "slide" | "layout" | "master"; placeholderDefaults?: Map<string, PlaceholderDefaults>; masterTextStyles?: MasterTextStyles; preserveTextStructure?: boolean } = {},
+  ): TextElement | null {
       const nvPr = shape.getElementsByTagNameNS("*", "nvPr")[0] ?? null;
       const ph = nvPr?.getElementsByTagNameNS("*", "ph")[0] ?? null;
-      if (opts.context && opts.context !== "slide" && ph) continue;
+      if (opts.context && opts.context !== "slide" && ph) return null;
       const txBody = shape.getElementsByTagNameNS("*", "txBody")[0];
-      if (!txBody) continue;
+      if (!txBody) return null;
 
       // Resolve placeholder defaults for this shape
-      const phDefaults = resolvePlaceholder(ph, opts.placeholderDefaults);
+      const phDefaults = resolvePlaceholder(ph, opts.placeholderDefaults, opts.masterTextStyles);
 
       const paragraphs = txBody.getElementsByTagNameNS("*", "p");
       const bodyPr = txBody.getElementsByTagNameNS("*", "bodyPr")[0] ?? null;
+      const textDirection = parseTextDirection(bodyPr, phDefaults?.vert);
       const anchor = bodyPr?.getAttribute("anchor") || phDefaults?.anchor || undefined;
       const verticalAlign = anchor === "ctr" ? "middle" : anchor === "b" ? "bottom" : "top";
       const lIns = bodyPr?.getAttribute("lIns") ?? phDefaults?.lIns;
@@ -82,21 +126,24 @@ export class TextExtractor {
       };
 
       let bulletChar: string | undefined;
-      const lvlDefaults: Record<number, { kind: "p" | "ul" | "ol"; listStyle?: string }> = {};
+      const lvlDefaults: Record<number, ListLevelDefaults> = {};
       const lstStyle = txBody.querySelector("*|lstStyle");
-      if (lstStyle) {
-        for (const node of Array.from(lstStyle.children)) {
-          const m = node.localName.match(/^lvl(\d+)pPr$/);
-          if (!m) continue;
-          const idx = parseInt(m[1], 10) - 1;
-          let kind: "p" | "ul" | "ol" = "p";
-          let listStyle: string | undefined;
-          if (node.querySelector("*|buNone")) kind = "p";
-          else if (node.querySelector("*|buAutoNum")) { kind = "ol"; listStyle = mapAutoNumToCss(node.querySelector("*|buAutoNum")?.getAttribute("type") || "arabicPeriod"); }
-          else if (node.querySelector("*|buChar")) { kind = "ul"; bulletChar = node.querySelector("*|buChar")?.getAttribute("char") || bulletChar; listStyle = "disc"; }
-          lvlDefaults[idx] = { kind, listStyle };
+      const shapeLstStyleDefinesLevels = lstStyleDefinesLevels(lstStyle);
+      if (shapeLstStyleDefinesLevels && lstStyle) {
+        const shapeLevels = parseListLevelDefaults(lstStyle, themeColors);
+        for (const [idx, lvl] of Object.entries(shapeLevels)) {
+          lvlDefaults[Number(idx)] = lvl;
+          if (lvl.bulletChar) bulletChar = lvl.bulletChar;
         }
       }
+
+      const effectivePhType = ph?.getAttribute("type") || phDefaults?.placeholderType || undefined;
+      const masterListKey = masterStyleKeyForPlaceholder(
+        effectivePhType,
+        ph?.getAttribute("idx"),
+      );
+      const masterListLevels = opts.masterTextStyles?.[masterListKey]?.listLevels;
+      const layoutListLevels = phDefaults?.listLevels;
 
       // Text run defaults cascade: placeholder → shape-level fallbacks
       const textDefaults: TextRunDefaults = {
@@ -107,6 +154,11 @@ export class TextExtractor {
         fontFamily: phDefaults?.fontFamily,
       };
 
+      const contentParagraphCount = Array.from(paragraphs).filter((p) => {
+        const runs = extractRunsFromParagraph(p, themeColors, textDefaults);
+        return runs.some((r) => !r.isBreak && r.text.trim());
+      }).length;
+
       const parsedParagraphs: ParsedParagraph[] = [];
       let horizontalAlign: "left" | "center" | "right" | "justify" | undefined;
       let defaultFontName = phDefaults?.fontFamily || "Arial";
@@ -115,8 +167,13 @@ export class TextExtractor {
 
       for (const p of Array.from(paragraphs)) {
         const pPr = p.getElementsByTagNameNS("*", "pPr")[0] ?? null;
-        const algn = pPr?.getAttribute("algn") || undefined;
-        if (algn && !horizontalAlign) horizontalAlign = algn === "ctr" ? "center" : algn === "r" ? "right" : algn.startsWith("just") ? "justify" : "left";
+        const lvlAttr = pPr?.getAttribute("lvl");
+        const lvl = lvlAttr ? parseInt(lvlAttr, 10) : 0;
+        const algn =
+          pPr?.getAttribute("algn")
+          || lvlDefaults[lvl]?.align
+          || masterListLevels?.[lvl]?.align
+          || undefined;
 
         const runs = extractRunsFromParagraph(p, themeColors, textDefaults);
 
@@ -130,22 +187,46 @@ export class TextExtractor {
           }
         }
 
-        const lvlAttr = pPr?.getAttribute("lvl");
-        const lvl = lvlAttr ? parseInt(lvlAttr, 10) : 0;
-        let kind: "p" | "ul" | "ol" = "p";
-        let listStyle: string | undefined;
-        if (pPr?.querySelector("*|buNone")) kind = "p";
-        else if (pPr?.querySelector("*|buAutoNum")) { kind = "ol"; listStyle = mapAutoNumToCss(pPr.querySelector("*|buAutoNum")?.getAttribute("type") || "arabicPeriod"); }
-        else if (pPr?.querySelector("*|buChar")) { kind = "ul"; bulletChar = pPr.querySelector("*|buChar")?.getAttribute("char") || bulletChar; listStyle = "disc"; }
-        else if (lvlDefaults[lvl]) { kind = lvlDefaults[lvl].kind; listStyle = lvlDefaults[lvl].listStyle; }
+        let maxContentFontSizePt = 0;
+        for (const run of runs) {
+          if (run.fontSize && run.fontSize > maxContentFontSizePt) maxContentFontSizePt = run.fontSize;
+        }
+        if (!maxContentFontSizePt && phDefaults?.fontSize) maxContentFontSizePt = phDefaults.fontSize;
 
-        const spaceBefore = parseParagraphSpacing(pPr, "spcBef");
+        const listResolved = resolveParagraphListKind(
+          {
+            pPr,
+            level: lvl,
+            shapeLstLevels: lvlDefaults,
+            shapeLstStyleDefinesLevels,
+            layoutLstLevels: layoutListLevels,
+            masterLstLevels: masterListLevels,
+            masterListKey,
+            ph,
+            paragraphCount: contentParagraphCount,
+            maxContentFontSizePt,
+          },
+          themeColors,
+        );
+        const kind = listResolved.kind;
+        const listStyle = listResolved.listStyle;
+        if (listResolved.bulletChar) bulletChar = listResolved.bulletChar;
+
+        let spaceBefore = parseParagraphSpacing(pPr, "spcBef");
         const spaceAfter = parseParagraphSpacing(pPr, "spcAft");
+        let { lineHeight, lineHeightPt } = parseLineSpacing(pPr);
 
         const marLAttr = pPr?.getAttribute("marL");
-        const marginLeft = marLAttr ? Number(marLAttr) / 9525 : undefined;
+        let marginLeft = marLAttr ? Number(marLAttr) / 9525 : undefined;
         const indentAttr = pPr?.getAttribute("indent");
-        const indent = indentAttr ? Number(indentAttr) / 9525 : undefined;
+        let indent = indentAttr ? Number(indentAttr) / 9525 : undefined;
+
+        const inheritedLvl = listResolved;
+        if (marginLeft == null && inheritedLvl.marginLeft != null) marginLeft = inheritedLvl.marginLeft;
+        if (indent == null && inheritedLvl.indent != null) indent = inheritedLvl.indent;
+        if (!spaceBefore && inheritedLvl.spaceBefore) spaceBefore = inheritedLvl.spaceBefore;
+        if (!lineHeight && inheritedLvl.lineHeight) lineHeight = inheritedLvl.lineHeight;
+        if (!lineHeightPt && inheritedLvl.lineHeightPt) lineHeightPt = inheritedLvl.lineHeightPt;
 
         let bulletColor: string | undefined;
         const buClrEl = pPr?.getElementsByTagNameNS("*", "buClr")[0] ?? null;
@@ -153,19 +234,18 @@ export class TextExtractor {
           bulletColor = XmlHelper.getColorFromElement(buClrEl, themeColors) ?? undefined;
         }
         if (!bulletColor && kind !== "p") {
+          bulletColor = inheritedLvl.bulletColor;
+        }
+        if (!bulletColor && kind !== "p") {
           const firstContentRun = runs.find((r) => !r.isBreak && r.text.trim());
           bulletColor = firstContentRun?.color;
         }
 
-        parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle, spaceBefore, spaceAfter, bulletColor, marginLeft, indent });
+        parsedParagraphs.push({ runs, align: algn, level: isNaN(lvl) ? 0 : lvl, listKind: kind, listStyle, spaceBefore, spaceAfter, lineHeight, lineHeightPt, bulletColor, marginLeft, indent });
       }
 
-      // Apply placeholder alignment, then implicit type defaults
-      if (!horizontalAlign) {
-        const a = phDefaults?.align
-          || (ph ? IMPLICIT_PLACEHOLDER_ALIGN[ph.getAttribute("type") || ""] : undefined);
-        if (a) horizontalAlign = a === "ctr" ? "center" : a === "r" ? "right" : a.startsWith("just") ? "justify" : "left";
-      }
+      // Shape-level align: only when all paragraphs agree; mixed → left + per-paragraph html
+      horizontalAlign = resolveShapeHorizontalAlign(parsedParagraphs, phDefaults, ph);
 
       // Resolve default color: slide lstStyle → defRPr → shape fill → placeholder → black
       let defaultColor: string | undefined;
@@ -186,18 +266,12 @@ export class TextExtractor {
         defaultColor = phDefaults.color;
       }
 
-      // Build plain text content
-      const textParts: string[] = [];
-      for (const para of parsedParagraphs) {
-        let t = "";
-        for (const r of para.runs) {
-          t += r.isBreak ? "\n" : r.text;
-        }
-        t = t.trim();
-        if (t) t.split(/\n+/).forEach((part) => { if (part.trim()) textParts.push(part); });
-      }
-      const content = opts.preserveTextStructure ? textParts.join("\n").trim() : textParts.join(" ").trim();
-      if (!content) continue;
+      // Build plain text content (preserve Shift+Enter breaks and blank lines)
+      const textParts = parsedParagraphs.map(paragraphToPlainText);
+      const content = opts.preserveTextStructure
+        ? textParts.join("\n")
+        : textParts.map((t) => t.replace(/\n+/g, " ").trim()).filter((t) => t.length > 0).join(" ").trim();
+      if (!content.trim() && !textBoxHasVisibleContent(parsedParagraphs)) return null;
 
       // Build segments with per-run formatting
       const segments: NonNullable<TextElement["segments"]> = [];
@@ -215,6 +289,8 @@ export class TextExtractor {
             bold: run.bold || undefined,
             italic: run.italic || undefined,
             underline: run.underline || undefined,
+            superscript: run.superscript || undefined,
+            subscript: run.subscript || undefined,
             color: run.color,
             fontSize: run.fontSize,
             fontFamily: run.fontFamily,
@@ -224,7 +300,7 @@ export class TextExtractor {
         }
       }
 
-      const richHtml = buildRichHtml(parsedParagraphs, bulletChar, defaultFontName, defaultFontSize, defaultColor);
+      const richHtml = buildRichHtml(parsedParagraphs, bulletChar, defaultFontName, defaultFontSize, defaultColor, phDefaults, ph);
 
       // Geometry: slide xfrm → placeholder defaults → fallback
       const xfrm = shape.getElementsByTagNameNS("*", "xfrm")[0];
@@ -245,21 +321,47 @@ export class TextExtractor {
       } else {
         x = 0; y = 0; cx = 1000000; cy = 500000;
       }
-      const lineHeight = getLineSpacing(bodyPr);
-      elements.push({
+      const bodyLineSpacing = parseLineSpacing(bodyPr);
+      const paraLineSpacing = parsedParagraphs.find((p) => p.lineHeight || p.lineHeightPt);
+      const lineHeight = bodyLineSpacing.lineHeight ?? paraLineSpacing?.lineHeight;
+      const lineHeightPt = bodyLineSpacing.lineHeightPt ?? paraLineSpacing?.lineHeightPt;
+      return {
         type: "text",
         content,
         position: { x, y },
         size: { width: cx, height: cy },
         font: { name: defaultFontName, size: defaultFontSize, color: defaultColor || "#000000" },
         align: { horizontal: horizontalAlign ?? "left", vertical: verticalAlign },
+        textDirection,
         padding,
         html: richHtml,
         segments,
         lineHeight,
-      });
+        lineHeightPt,
+      };
+  }
+
+  /** Extract default paragraph/run properties from slide master txStyles (title/body/other). */
+  static extractMasterTextStyles(masterDoc: Document | null, themeColors: Record<string, string>): MasterTextStyles {
+    if (!masterDoc) return {};
+    const styles: MasterTextStyles = {};
+    const mapping: Array<[MasterTextStyleKey, string]> = [
+      ["title", "titleStyle"],
+      ["body", "bodyStyle"],
+      ["other", "otherStyle"],
+    ];
+    for (const [key, tag] of mapping) {
+      const styleEl = masterDoc.getElementsByTagNameNS("*", tag)[0] ?? null;
+      const lvl1pPr = styleEl?.querySelector("*|lvl1pPr");
+      const defRPr = lvl1pPr?.querySelector("*|defRPr") ?? styleEl?.querySelector("*|defPPr *|defRPr");
+      const defaults: MasterStyleDefaults = defRPr ? parseDefRPrDefaults(defRPr, themeColors) : {};
+      const algn = lvl1pPr?.getAttribute("algn");
+      if (algn) defaults.align = algn;
+      const listLevels = parseListLevelDefaults(styleEl, themeColors);
+      if (Object.keys(listLevels).length > 0) defaults.listLevels = listLevels;
+      if (Object.keys(defaults).length > 0) styles[key] = defaults;
     }
-    return elements;
+    return styles;
   }
 }
 
@@ -273,19 +375,109 @@ const IMPLICIT_PLACEHOLDER_ALIGN: Record<string, string> = {
  * Match a slide placeholder to its layout/master definition.
  * Tries idx first (more specific), then type (well-known placeholders like title/body).
  */
-function resolvePlaceholder(ph: Element | null, defaults?: Map<string, PlaceholderDefaults>): PlaceholderDefaults | undefined {
-  if (!ph || !defaults) return undefined;
+function masterStyleKeyForPlaceholder(type?: string | null, idx?: string | null): MasterTextStyleKey {
+  if (!type) {
+    // idx 1 is the standard content/body placeholder when type is omitted
+    if (idx === "1") return "body";
+    return "other";
+  }
+  if (type === "title" || type === "ctrTitle") return "title";
+  if (type === "body" || type === "obj" || type === "subTitle" || type === "dt") return "body";
+  return "other";
+}
+
+function lookupPlaceholderByType(
+  type: string | null | undefined,
+  defaults?: Map<string, PlaceholderDefaults>,
+): PlaceholderDefaults | undefined {
+  if (!type || !defaults) return undefined;
+  let matched = defaults.get(`type:${type}`);
+  if (!matched) {
+    for (const alias of PLACEHOLDER_TYPE_ALIASES[type] || []) {
+      matched = defaults.get(`type:${alias}`);
+      if (matched) break;
+    }
+  }
+  return matched;
+}
+
+/** Layout idx can match while geometry lives on the master's type entry — inherit missing fields. */
+function mergePlaceholderDefaults(
+  base?: PlaceholderDefaults,
+  override?: PlaceholderDefaults,
+): PlaceholderDefaults | undefined {
+  if (!base && !override) return undefined;
+  const merged: PlaceholderDefaults = { ...base, ...override };
+  const inheritKeys: Array<keyof PlaceholderDefaults> = [
+    "x", "y", "cx", "cy", "anchor", "lIns", "tIns", "rIns", "bIns", "align",
+    "fontSize", "fontFamily", "bold", "italic", "color", "placeholderType", "listLevels",
+  ];
+  for (const key of inheritKeys) {
+    if (merged[key] == null && base?.[key] != null) {
+      (merged as any)[key] = base[key];
+    }
+  }
+  return merged;
+}
+
+function resolvePlaceholder(
+  ph: Element | null,
+  defaults?: Map<string, PlaceholderDefaults>,
+  masterTextStyles?: MasterTextStyles,
+): PlaceholderDefaults | undefined {
+  if (!ph) return undefined;
+
   const idx = ph.getAttribute("idx");
   const type = ph.getAttribute("type");
-  if (idx) {
-    const byIdx = defaults.get(`idx:${idx}`);
-    if (byIdx) return byIdx;
-  }
-  if (type) {
-    const byType = defaults.get(`type:${type}`);
-    if (byType) return byType;
+  const byType = lookupPlaceholderByType(type, defaults);
+  const byIdx = idx && defaults ? defaults.get(`idx:${idx}`) : undefined;
+  const matched = mergePlaceholderDefaults(byType, byIdx);
+  const effectiveType = type || matched?.placeholderType;
+
+  const styleDefaults = masterTextStyles?.[masterStyleKeyForPlaceholder(effectiveType, idx)];
+  const runDefaults: PlaceholderDefaults | undefined = styleDefaults
+    ? {
+        bold: styleDefaults.bold,
+        italic: styleDefaults.italic,
+        color: styleDefaults.color,
+        fontSize: styleDefaults.fontSize,
+        fontFamily: styleDefaults.fontFamily,
+      }
+    : undefined;
+  if (runDefaults || matched) {
+    return {
+      ...runDefaults,
+      ...matched,
+      placeholderType: effectiveType || matched?.placeholderType,
+      listLevels: matched?.listLevels,
+    };
   }
   return undefined;
+}
+
+function mapOoxmlAlign(algn: string): "left" | "center" | "right" | "justify" {
+  if (algn === "ctr") return "center";
+  if (algn === "r") return "right";
+  if (algn.startsWith("just")) return "justify";
+  return "left";
+}
+
+function parseDefRPrDefaults(defRPr: Element, themeColors: Record<string, string>): TextRunDefaults {
+  const defaults: TextRunDefaults = {};
+  const sz = defRPr.getAttribute("sz");
+  if (sz) {
+    const n = parseInt(sz, 10);
+    if (Number.isFinite(n)) defaults.fontSize = n / 100;
+  }
+  if (defRPr.getAttribute("b") === "1") defaults.bold = true;
+  if (defRPr.getAttribute("i") === "1") defaults.italic = true;
+  const solidFill = defRPr.querySelector("*|solidFill");
+  const color = XmlHelper.getColorFromElement(solidFill || null, themeColors);
+  if (color) defaults.color = color;
+  const latin = defRPr.getElementsByTagNameNS("*", "latin")[0];
+  const fontFamily = latin?.getAttribute("typeface");
+  if (fontFamily) defaults.fontFamily = fontFamily;
+  return defaults;
 }
 
 function extractRunsFromParagraph(p: Element, themeColors: Record<string, string>, textDefaults?: TextRunDefaults): ParsedRun[] {
@@ -340,10 +532,18 @@ function buildRunFromProps(text: string, rPr: Element | null, themeColors: Recor
   const italic = iAttr === "1" ? true : iAttr === "0" ? false : textDefaults?.italic;
 
   const uVal = rPr.getAttribute("u");
-  const underline = uVal && uVal !== "none" ? true : undefined;
+  let underline = uVal && uVal !== "none" ? true : undefined;
+
+  const hasHyperlink = !!(
+    rPr.querySelector("*|hlinkClick") || rPr.querySelector("*|hlinkMouseOver")
+  );
+  if (hasHyperlink) underline = true;
 
   const solidFill = rPr.querySelector("*|solidFill");
-  const color = XmlHelper.getColorFromElement(solidFill || null, themeColors) ?? textDefaults?.color;
+  let color = XmlHelper.getColorFromElement(solidFill || null, themeColors) ?? textDefaults?.color;
+  if (hasHyperlink && !solidFill && themeColors.hlink) {
+    color = themeColors.hlink;
+  }
 
   let fontSize: number | undefined;
   const sz = rPr.getAttribute("sz");
@@ -356,7 +556,136 @@ function buildRunFromProps(text: string, rPr: Element | null, themeColors: Recor
   const latin = rPr.getElementsByTagNameNS("*", "latin")[0];
   const fontFamily = latin?.getAttribute("typeface") || textDefaults?.fontFamily || undefined;
 
-  return { text, bold: bold || undefined, italic: italic || undefined, underline, color, fontSize, fontFamily };
+  const { superscript, subscript } = parseBaselineOffset(rPr.getAttribute("baseline"));
+
+  return { text, bold: bold || undefined, italic: italic || undefined, underline, superscript, subscript, color, fontSize, fontFamily };
+}
+
+/** a:rPr @baseline — positive raises (superscript), negative lowers (subscript). */
+function parseBaselineOffset(baseline: string | null): { superscript?: boolean; subscript?: boolean } {
+  if (!baseline) return {};
+  const n = parseInt(baseline, 10);
+  if (!Number.isFinite(n) || n === 0) return {};
+  return n > 0 ? { superscript: true } : { subscript: true };
+}
+
+function paragraphHasText(para: ParsedParagraph): boolean {
+  return para.runs.some((r) => !r.isBreak && r.text.trim().length > 0);
+}
+
+function paragraphHasLineBreaks(para: ParsedParagraph): boolean {
+  return para.runs.some((r) => r.isBreak);
+}
+
+/** Empty <a:p> used as vertical spacing (Enter), not the default lone empty paragraph. */
+function paragraphIsEmptySpacer(para: ParsedParagraph, all: ParsedParagraph[]): boolean {
+  if (para.runs.length > 0) return false;
+  return all.some((p) => p !== para && (paragraphHasText(p) || paragraphHasLineBreaks(p)));
+}
+
+function paragraphHasSpacing(para: ParsedParagraph, all: ParsedParagraph[]): boolean {
+  return paragraphHasText(para) || paragraphHasLineBreaks(para) || paragraphIsEmptySpacer(para, all);
+}
+
+function paragraphToPlainText(para: ParsedParagraph): string {
+  let t = "";
+  for (const r of para.runs) {
+    t += r.isBreak ? "\n" : r.text;
+  }
+  return t;
+}
+
+function textBoxHasVisibleContent(paragraphs: ParsedParagraph[]): boolean {
+  return paragraphs.some((p) => paragraphHasSpacing(p, paragraphs));
+}
+
+/** PowerPoint single line spacing is ~1.2× font size; spcPct is a multiple of that. */
+const POWERPOINT_SINGLE_LINE_FACTOR = 1.2;
+
+function canUseFlowLayout(paragraphs: ParsedParagraph[]): boolean {
+  return paragraphs.every(
+    (p) =>
+      p.listKind === "p" &&
+      !p.spaceBefore &&
+      !p.spaceAfter &&
+      (p.marginLeft == null || p.marginLeft === 0) &&
+      p.level === 0,
+  );
+}
+
+function inheritedPlaceholderAlign(
+  phDefaults?: PlaceholderDefaults,
+  ph?: Element | null,
+): string | undefined {
+  return phDefaults?.align
+    || (ph ? IMPLICIT_PLACEHOLDER_ALIGN[ph.getAttribute("type") || ""] : undefined);
+}
+
+function resolveParagraphAlignCss(
+  para: ParsedParagraph,
+  phDefaults?: PlaceholderDefaults,
+  ph?: Element | null,
+): "left" | "center" | "right" | "justify" {
+  if (para.align) return mapOoxmlAlign(para.align);
+  const inherited = inheritedPlaceholderAlign(phDefaults, ph);
+  if (inherited) return mapOoxmlAlign(inherited);
+  return "left";
+}
+
+function resolveShapeHorizontalAlign(
+  paragraphs: ParsedParagraph[],
+  phDefaults?: PlaceholderDefaults,
+  ph?: Element | null,
+): "left" | "center" | "right" | "justify" {
+  const contentParas = paragraphs.filter((p) => paragraphHasText(p));
+  const effectiveAligns = contentParas.map((p) => resolveParagraphAlignCss(p, phDefaults, ph));
+  const unique = new Set(effectiveAligns);
+  if (unique.size === 1) return [...unique][0];
+  if (unique.size > 1) return "left";
+
+  const inherited = inheritedPlaceholderAlign(phDefaults, ph);
+  if (inherited) return mapOoxmlAlign(inherited);
+  return "left";
+}
+
+function buildFlowLayoutHtml(
+  paragraphs: ParsedParagraph[],
+  defaultFont: string,
+  defaultSize: number,
+  defaultColor: string | undefined,
+  phDefaults?: PlaceholderDefaults,
+  ph?: Element | null,
+): string {
+  const lines: string[] = [];
+  for (const para of paragraphs) {
+    if (!paragraphHasSpacing(para, paragraphs)) continue;
+    const styles = ["margin:0", "padding:0", "display:block"];
+    styles.push(`text-align:${resolveParagraphAlignCss(para, phDefaults, ph)}`);
+    const inner = paragraphHasText(para) || paragraphHasLineBreaks(para)
+      ? renderRunsToHtml(para.runs, defaultFont, defaultSize, defaultColor)
+      : "<br>";
+    lines.push(`<div style="${styles.join(";")}">${inner}</div>`);
+  }
+  if (lines.length === 0) return "";
+
+  const wrapperStyles = ["margin:0", "padding:0", "display:block"];
+  const lineHeight = paragraphs.find((p) => p.lineHeight)?.lineHeight;
+  const lineHeightPt = paragraphs.find((p) => p.lineHeightPt)?.lineHeightPt;
+  if (lineHeight) wrapperStyles.push(`line-height:${lineHeight}`);
+  else if (lineHeightPt) wrapperStyles.push(`line-height:${lineHeightPt}pt`);
+
+  return `<div style="${wrapperStyles.join(";")}">${lines.join("")}</div>`;
+}
+
+function paragraphLineGapPt(para: ParsedParagraph, defaultSize: number): number | undefined {
+  if (para.lineHeightPt != null) {
+    const gap = para.lineHeightPt - defaultSize;
+    return gap > 0 ? gap : undefined;
+  }
+  if (para.lineHeight != null && para.lineHeight > 1) {
+    return (para.lineHeight - 1) * defaultSize;
+  }
+  return undefined;
 }
 
 function buildRichHtml(
@@ -365,7 +694,13 @@ function buildRichHtml(
   defaultFont: string,
   defaultSize: number,
   defaultColor: string | undefined,
+  phDefaults?: PlaceholderDefaults,
+  ph?: Element | null,
 ): string {
+  if (canUseFlowLayout(paragraphs)) {
+    return buildFlowLayoutHtml(paragraphs, defaultFont, defaultSize, defaultColor, phDefaults, ph);
+  }
+
   const parts: string[] = [];
   let openList: { kind: "ul" | "ol"; listStyle?: string } | null = null;
   const bullet = bulletChar ? escapeHtml(bulletChar) : "\u2022";
@@ -373,35 +708,45 @@ function buildRichHtml(
   for (let pi = 0; pi < paragraphs.length; pi++) {
     const para = paragraphs[pi];
     const runsHtml = renderRunsToHtml(para.runs, defaultFont, defaultSize, defaultColor);
-    const hasContent = para.runs.some((r) => !r.isBreak && r.text.trim());
+    const hasContent = paragraphHasText(para);
+    const hasSpacing = paragraphHasSpacing(para, paragraphs);
 
     const spacingStyles: string[] = [];
     if (para.spaceBefore && pi > 0) spacingStyles.push(`margin-top:${para.spaceBefore}pt`);
     if (para.spaceAfter && pi < paragraphs.length - 1) spacingStyles.push(`margin-bottom:${para.spaceAfter}pt`);
+    const lineGap = paragraphLineGapPt(para, defaultSize);
+    if (lineGap && pi < paragraphs.length - 1 && hasContent) spacingStyles.push(`margin-bottom:${lineGap}pt`);
 
     if (para.listKind === "p") {
       if (openList) {
         parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
         openList = null;
       }
+      if (!hasSpacing) continue;
       const ml = para.marginLeft ?? (para.level > 0 ? para.level * 24 : 0);
       if (ml > 0) spacingStyles.push(`margin-left:${ml}px`);
+      spacingStyles.push(`text-align:${resolveParagraphAlignCss(para, phDefaults, ph)}`);
       const styleAttr = spacingStyles.length ? ` style="${spacingStyles.join(";")}"` : "";
-      parts.push(hasContent ? `<div${styleAttr}>${runsHtml}</div>` : `<div${styleAttr}>&nbsp;</div>`);
+      const inner = hasContent || paragraphHasLineBreaks(para)
+        ? runsHtml
+        : "<br>";
+      parts.push(`<div${styleAttr}>${inner}</div>`);
     } else {
       if (!openList || openList.kind !== para.listKind) {
         if (openList) parts.push(openList.kind === "ul" ? "</ul>" : "</ol>");
-        const commonListCss = `list-style-position: outside; padding-left: 0; margin: 0;`;
-        const style = para.listKind === "ol"
-          ? ` style="${commonListCss} list-style-type: ${para.listStyle || "decimal"};"`
-          : ` style="${commonListCss}"`;
+        const marL = para.marginLeft ?? para.level * 24;
+        const { ulPaddingLeft } = listBulletLayoutCss(marL, para.indent);
+        const commonListCss = `list-style-position:outside;padding-left:${ulPaddingLeft}px;margin:0;list-style-type:${para.listKind === "ol" ? (para.listStyle || "decimal") : "disc"}`;
+        const style = ` style="${commonListCss}"`;
         parts.push(para.listKind === "ul" ? `<ul${style}>` : `<ol${style}>`);
         if (para.listKind === "ul") parts.push(`<style>.pptx-bullet::marker{content:"${bullet} ";}</style>`);
         openList = { kind: para.listKind, listStyle: para.listStyle };
       }
-      const ml = para.marginLeft ?? para.level * 24;
-      spacingStyles.push(`margin-left:${ml}px`);
+      const marL = para.marginLeft ?? para.level * 24;
+      const { liPaddingLeft } = listBulletLayoutCss(marL, para.indent);
+      if (liPaddingLeft > 0) spacingStyles.push(`padding-left:${liPaddingLeft}px`);
       if (para.bulletColor) spacingStyles.push(`color:${para.bulletColor}`);
+      spacingStyles.push(`text-align:${resolveParagraphAlignCss(para, phDefaults, ph)}`);
       parts.push(`<li class="pptx-bullet" style="${spacingStyles.join(";")}">${runsHtml}</li>`);
     }
   }
@@ -415,19 +760,22 @@ function renderRunsToHtml(
   defaultSize: number,
   defaultColor: string | undefined,
 ): string {
-  return runs.map((run) => {
-    if (run.isBreak) return "<br>";
-    const styles: string[] = [];
-    if (run.bold) styles.push("font-weight:bold");
-    if (run.italic) styles.push("font-style:italic");
-    if (run.underline) styles.push("text-decoration:underline");
-    if (run.color && run.color !== defaultColor) styles.push(`color:${run.color}`);
-    if (run.fontSize && run.fontSize !== defaultSize) styles.push(`font-size:${run.fontSize}pt`);
-    if (run.fontFamily && run.fontFamily !== defaultFont) styles.push(`font-family:${run.fontFamily}`);
-    const escaped = escapeHtml(run.text);
-    if (styles.length === 0) return escaped;
-    return `<span style="${styles.join(";")}">${escaped}</span>`;
-  }).join("");
+  return runs
+    .flatMap((run) => {
+      if (run.isBreak) return ["<br>"];
+      return splitTextByUrls(run.text).map((part) => {
+        const partRun: ParsedRun = {
+          ...run,
+          text: part.text,
+          underline: run.underline || part.isUrl || undefined,
+        };
+        const styles = textRunInlineStyles(partRun, defaultFont, defaultSize, defaultColor);
+        const escaped = escapeHtml(part.text);
+        if (styles.length === 0) return escaped;
+        return `<span style="${styles.join(";")}">${escaped}</span>`;
+      });
+    })
+    .join("");
 }
 
 /**
@@ -454,4 +802,25 @@ function parseParagraphSpacing(pPr: Element | null, tag: "spcBef" | "spcAft"): n
 
 function mapAutoNumToCss(typ: string): string { const t = typ.toLowerCase(); if (t.includes("alphauc")) return "upper-alpha"; if (t.includes("alphalc")) return "lower-alpha"; if (t.includes("romanu")) return "upper-roman"; if (t.includes("romanl")) return "lower-roman"; return "decimal"; }
 function escapeHtml(str: string): string { return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
-function getLineSpacing(bodyPr: Element | null): number | undefined { const lnSpc = bodyPr?.querySelector("*|lnSpc"); const spcPct = lnSpc?.querySelector("*|spcPct"); const spcPts = lnSpc?.querySelector("*|spcPts"); if (spcPts) { const v = Number(spcPts.getAttribute("val") || 0); return Number.isFinite(v) && v > 0 ? v / 100 : undefined; } if (spcPct) { const v = Number(spcPct.getAttribute("val") || 0); return Number.isFinite(v) && v > 0 ? v / 100000 : undefined; } return undefined; }
+/**
+ * Extract a:lnSpc from a:bodyPr or a:pPr.
+ * spcPct is a percentage multiplier (100000 = 100%); spcPts is hundredths of a point.
+ */
+function parseLineSpacing(pr: Element | null): { lineHeight?: number; lineHeightPt?: number } {
+  if (!pr) return {};
+  const lnSpc = pr.getElementsByTagNameNS("*", "lnSpc")[0] ?? null;
+  if (!lnSpc) return {};
+  const spcPts = lnSpc.getElementsByTagNameNS("*", "spcPts")[0] ?? null;
+  if (spcPts) {
+    const v = Number(spcPts.getAttribute("val") || 0);
+    if (Number.isFinite(v) && v > 0) return { lineHeightPt: v / 100 };
+  }
+  const spcPct = lnSpc.getElementsByTagNameNS("*", "spcPct")[0] ?? null;
+  if (spcPct) {
+    const v = Number(spcPct.getAttribute("val") || 0);
+    if (Number.isFinite(v) && v > 0) {
+      return { lineHeight: (v / 100000) * POWERPOINT_SINGLE_LINE_FACTOR };
+    }
+  }
+  return {};
+}
